@@ -48,6 +48,7 @@ class StateStore:
                     run_id TEXT NOT NULL,
                     stage TEXT NOT NULL,
                     payload_json TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'success',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (run_id, stage),
@@ -63,6 +64,11 @@ class StateStore:
                 );
                 """
             )
+            columns = {row["name"] for row in connection.execute("PRAGMA table_info(checkpoints)")}
+            if "status" not in columns:
+                connection.execute(
+                    "ALTER TABLE checkpoints ADD COLUMN status TEXT NOT NULL DEFAULT 'success'"
+                )
 
     def create_run(self, config: RunConfig) -> str:
         run_id = str(uuid.uuid4())
@@ -77,23 +83,35 @@ class StateStore:
         return run_id
 
     def get_checkpoint(self, run_id: str, stage: str) -> dict[str, Any] | None:
+        record = self.get_checkpoint_record(run_id, stage)
+        if record is None or record["status"] != "success":
+            return None
+        return record["payload"]
+
+    def get_checkpoint_record(self, run_id: str, stage: str) -> dict[str, Any] | None:
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT payload_json FROM checkpoints WHERE run_id = ? AND stage = ?",
+                "SELECT payload_json, status FROM checkpoints WHERE run_id = ? AND stage = ?",
                 (run_id, stage),
             ).fetchone()
-        return None if row is None else json.loads(row["payload_json"])
+        if row is None:
+            return None
+        return {"payload": json.loads(row["payload_json"]), "status": row["status"]}
 
-    def save_checkpoint(self, run_id: str, stage: str, payload: dict[str, Any]) -> None:
+    def save_checkpoint(
+        self, run_id: str, stage: str, payload: dict[str, Any], *, status: str = "success"
+    ) -> None:
         now = _utc_now()
         payload_json = json.dumps(payload, ensure_ascii=True)
         with self._connect() as connection:
             connection.execute(
-                """INSERT INTO checkpoints (run_id, stage, payload_json, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?)
+                """INSERT INTO checkpoints
+                   (run_id, stage, payload_json, status, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?)
                    ON CONFLICT(run_id, stage) DO UPDATE SET
-                     payload_json = excluded.payload_json, updated_at = excluded.updated_at""",
-                (run_id, stage, payload_json, now, now),
+                     payload_json = excluded.payload_json, status = excluded.status,
+                     updated_at = excluded.updated_at""",
+                (run_id, stage, payload_json, status, now, now),
             )
 
     def save_trace(self, trace: TraceRecord) -> None:

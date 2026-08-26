@@ -33,6 +33,15 @@ def test_checkpoint_upsert_replaces_payload(tmp_path):
     assert store.get_checkpoint(run_id, "fetch") == {"version": 2}
 
 
+def test_failed_checkpoint_is_not_treated_as_completed(tmp_path):
+    store = StateStore(tmp_path / "state.db")
+    run_id = store.create_run(RunConfig(url="local://fixture"))
+    store.save_checkpoint(run_id, "fetch", {"error": "network"}, status="failed")
+
+    assert store.get_checkpoint(run_id, "fetch") is None
+    assert store.get_checkpoint_record(run_id, "fetch")["status"] == "failed"
+
+
 def test_trace_persists_all_audit_fields_and_updates_cost(tmp_path):
     store = StateStore(tmp_path / "state.db")
     run_id = store.create_run(RunConfig(url="local://fixture"))
