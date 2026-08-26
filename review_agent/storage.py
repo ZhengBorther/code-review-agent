@@ -62,6 +62,16 @@ class StateStore:
                     created_at TEXT NOT NULL,
                     FOREIGN KEY (run_id) REFERENCES runs(run_id) ON DELETE CASCADE
                 );
+                CREATE TABLE IF NOT EXISTS reservations (
+                    token TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    reserved_usd REAL NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'in_flight',
+                    actual_usd REAL NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (run_id) REFERENCES runs(run_id) ON DELETE CASCADE
+                );
                 """
             )
             columns = {row["name"] for row in connection.execute("PRAGMA table_info(checkpoints)")}
@@ -166,6 +176,49 @@ class StateStore:
             )
             if cursor.rowcount == 0:
                 raise KeyError(f"unknown run: {run_id}")
+
+    def reserve_budget(self, run_id: str, token: str, amount_usd: float) -> bool:
+        """Atomically reserve budget across processes before an LLM request."""
+        amount = max(0.0, float(amount_usd))
+        now = _utc_now()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            run = connection.execute(
+                "SELECT budget_usd, cost_usd FROM runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if run is None:
+                raise KeyError(f"unknown run: {run_id}")
+            reserved = connection.execute(
+                "SELECT COALESCE(SUM(reserved_usd), 0) FROM reservations WHERE run_id = ? AND status = 'in_flight'",
+                (run_id,),
+            ).fetchone()[0]
+            if float(run["cost_usd"]) + float(reserved) + amount > float(run["budget_usd"]) + 1e-12:
+                return False
+            connection.execute(
+                "INSERT INTO reservations (token, run_id, reserved_usd, status, created_at, updated_at) VALUES (?, ?, ?, 'in_flight', ?, ?)",
+                (token, run_id, amount, now, now),
+            )
+            return True
+
+    def settle_reservation(self, run_id: str, token: str, actual_usd: float) -> bool:
+        """Release a reservation and atomically account actual provider cost."""
+        actual = max(0.0, float(actual_usd))
+        now = _utc_now()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            reservation = connection.execute(
+                "SELECT reserved_usd, status FROM reservations WHERE token = ? AND run_id = ?",
+                (token, run_id),
+            ).fetchone()
+            if reservation is None or reservation["status"] != "in_flight":
+                return False
+            run = connection.execute("SELECT budget_usd, cost_usd FROM runs WHERE run_id = ?", (run_id,)).fetchone()
+            remaining = max(0.0, float(run["budget_usd"]) - float(run["cost_usd"]))
+            accepted = actual <= remaining + 1e-12
+            accounted = actual if accepted else remaining
+            connection.execute("UPDATE runs SET cost_usd = cost_usd + ?, updated_at = ? WHERE run_id = ?", (accounted, now, run_id))
+            connection.execute("UPDATE reservations SET status = ?, actual_usd = ?, updated_at = ? WHERE token = ?", ("completed" if accepted else "rejected", actual, now, token))
+            return accepted
 
     def update_run(self, run_id: str, *, status: str | None = None, cost_usd: float | None = None) -> None:
         updates: list[str] = []

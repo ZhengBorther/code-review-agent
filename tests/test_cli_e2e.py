@@ -40,3 +40,15 @@ def test_cli_accepts_explicit_run_id(tmp_path):
     with StateStore(state_dir / "state.db")._connect() as conn:
         run_id = conn.execute("SELECT run_id FROM runs").fetchone()[0]
     assert main(["review", "--run-id", run_id, "--output", str(output), "--offline", "--state-dir", str(state_dir)]) == 0
+
+
+def test_cli_local_diff_identity_changes_with_input(tmp_path):
+    state_dir = tmp_path / "state"
+    first = tmp_path / "one.diff"
+    second = tmp_path / "two.diff"
+    first.write_text("diff --git a/a.py b/a.py\n+ # TODO one\n", encoding="utf-8")
+    second.write_text("diff --git a/b.py b/b.py\n+ # TODO two\n", encoding="utf-8")
+    for diff in (first, second):
+        assert main(["review", "--diff-file", str(diff), "--output", str(tmp_path / (diff.stem + ".md")), "--offline", "--state-dir", str(state_dir)]) == 0
+    with StateStore(state_dir / "state.db")._connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 2

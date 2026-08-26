@@ -130,7 +130,7 @@ class ReviewPipeline:
                         degradations.append(decision.reason)
                     if decision.allow_llm and decision.model:
                         reservation = controller.reserve(decision.model, decision.estimated_tokens or estimate_tokens(prompt))
-                        if reservation is None:
+                        if reservation is None or not self.store.reserve_budget(run_id, reservation.token, reservation.reserved_usd):
                             decision = replace(decision, model=None, allow_llm=False, reason="budget_exceeded")
                             degradations.append("budget_exceeded")
                         else:
@@ -138,26 +138,24 @@ class ReviewPipeline:
                             started = time.monotonic()
                             try:
                                 response = self.llm.review(prompt, decision.model, max_chars=decision.max_chars, max_tokens=decision.max_tokens or config.completion_tokens)
-                                before_cost = float(self.store.get_run(run_id)["cost_usd"])
                                 try:
                                     accepted = controller.commit(reservation, response.cost_usd)
                                 except Exception:
                                     accepted = False
+                                persisted_accepted = self.store.settle_reservation(run_id, reservation.token, response.cost_usd)
+                                accepted = accepted and persisted_accepted
                                 if accepted:
-                                    self.store.update_run_cost(run_id, response.cost_usd)
                                     trace_id = self._trace(run_id, kind="llm", input_hash=diff_hash, prompt=prompt if decision.max_chars is None else prompt[: decision.max_chars], response=response.text, model=response.model or decision.model, prompt_tokens=response.prompt_tokens, completion_tokens=response.completion_tokens, cost_usd=response.cost_usd, duration_ms=int((time.monotonic() - started) * 1000))
                                     llm_findings.append(Finding(title="模型审查建议", body=response.text, confidence="advisory", evidence="llm", trace_id=trace_id))
                                     self.store.save_checkpoint(run_id, "review_reservation", {"status": "completed", "token": reservation.token, "reserved_usd": reservation.reserved_usd, "model": decision.model, "input_hash": diff_hash})
                                 else:
-                                    remaining = max(0.0, config.budget_usd - before_cost)
-                                    if remaining:
-                                        self.store.update_run_cost(run_id, remaining)
                                     trace_id = self._trace(run_id, kind="llm", input_hash=diff_hash, prompt=prompt if decision.max_chars is None else prompt[: decision.max_chars], response=response.text, model=response.model or decision.model, prompt_tokens=response.prompt_tokens, completion_tokens=response.completion_tokens, cost_usd=response.cost_usd, duration_ms=int((time.monotonic() - started) * 1000), error="provider_cost_exceeded_budget")
                                     llm_findings.append(Finding(title="模型审查超出预算", body="模型实际成本超过剩余预算，回复未作为审查建议采纳。", confidence="advisory", evidence="budget:provider_cost_exceeded", trace_id=trace_id))
                                     degradations.append("provider_cost_exceeded")
                                     self.store.save_checkpoint(run_id, "review_reservation", {"status": "rejected", "token": reservation.token, "reserved_usd": reservation.reserved_usd, "model": decision.model, "input_hash": diff_hash})
                             except Exception as exc:
                                 controller.commit(reservation, 0.0)
+                                self.store.settle_reservation(run_id, reservation.token, 0.0)
                                 self._fail(run_id, "review", exc)
                                 failure_recorded = True
                                 raise

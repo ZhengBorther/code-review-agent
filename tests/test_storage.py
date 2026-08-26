@@ -62,3 +62,14 @@ def test_run_status_can_be_updated(tmp_path):
     run_id = store.create_run(RunConfig(url="local://fixture"))
     store.update_run(run_id, status="completed")
     assert store.get_run(run_id)["status"] == "completed"
+
+
+def test_budget_reservation_is_atomic_and_settled(tmp_path):
+    db = tmp_path / "state.db"
+    store = StateStore(db)
+    run_id = store.create_run(RunConfig(url="local://fixture", budget_usd=1.0))
+    assert store.reserve_budget(run_id, "r1", 0.75)
+    assert not store.reserve_budget(run_id, "r2", 0.30)
+    assert store.settle_reservation(run_id, "r1", 0.50)
+    assert store.get_run(run_id)["cost_usd"] == 0.5
+    assert store.reserve_budget(run_id, "r3", 0.5)

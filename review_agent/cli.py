@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
-from .adapters import LocalDiffAdapter
+from .adapters import GitHubAdapter, GitLabAdapter, LocalDiffAdapter
 from .llm import DeterministicClient, OpenAICompatibleClient
 from .models import RunConfig
 from .pipeline import ReviewPipeline
@@ -37,13 +39,23 @@ def _run_review(args: argparse.Namespace) -> int:
     if args.run_id is None and args.diff_file is None and not args.url:
         raise ValueError("provide a PR/MR URL or --diff-file")
     if args.diff_file is not None:
-        url = args.url or "local://diff"
+        resolved = args.diff_file.resolve()
+        digest = hashlib.sha256(resolved.read_bytes()).hexdigest() if resolved.is_file() else "missing"
+        # Include path and content identity so different local inputs never
+        # silently reuse a prior run's checkpoints.
+        url = args.url or f"local://{resolved}#sha256={digest}"
         adapter = LocalDiffAdapter(args.diff_file)
     elif args.run_id is not None:
         url = args.url or "local://diff"
         adapter = LocalDiffAdapter(Path("__unused_diff_for_resume__"))
     else:
-        raise ValueError("remote GitHub/GitLab adapters are not configured in this release; use --diff-file")
+        host = (urlparse(args.url).hostname or "").lower()
+        if host == "github.com" or host.endswith(".github.com"):
+            adapter = GitHubAdapter()
+        elif host == "gitlab.com" or "gitlab" in host:
+            adapter = GitLabAdapter()
+        else:
+            raise ValueError("unsupported change-request URL; expected GitHub or GitLab PR/MR")
 
     if args.offline:
         client = DeterministicClient()
