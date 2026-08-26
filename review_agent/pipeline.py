@@ -124,7 +124,8 @@ class ReviewPipeline:
                 else:
                     controller = BudgetController(config)
                     controller.spent_usd = float(self.store.get_run(run_id)["cost_usd"])
-                    prompt = "请审查以下已脱敏的代码变更，指出潜在问题并给出修复建议。\n\n" + sanitized_diff
+                    bounded_diff = sanitized_diff[: config.max_diff_chars]
+                    prompt = "请审查以下已脱敏的代码变更，指出潜在问题并给出修复建议。\n\n" + bounded_diff
                     decision = controller.select(config.model, estimate_tokens(prompt), allow_truncate=True)
                     if decision.reason != "within_budget":
                         degradations.append(decision.reason)
