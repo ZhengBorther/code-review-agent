@@ -1,5 +1,5 @@
 from review_agent.adapters import LocalDiffAdapter
-from review_agent.models import ChangeRequest
+from review_agent.models import ChangeRequest, Finding
 from review_agent.security import redact_secrets
 from review_agent.tools import ToolRegistry, ToolSpec
 
@@ -59,6 +59,16 @@ def test_tool_registry_rejects_invalid_confidence_at_registration():
         assert "confidence" in str(exc)
     else:
         raise AssertionError("invalid confidence must be rejected")
+
+
+def test_tool_registry_normalizes_runner_finding_confidence_to_spec():
+    registry = ToolRegistry()
+    registry.register(ToolSpec(
+        name="advisory-rule", description="test",
+        runner=lambda _c, _d: [Finding("x", "y", "high")], confidence="advisory",
+    ))
+    findings = registry.run_all(ChangeRequest(url="local://fixture"), "")
+    assert findings[0].confidence == "advisory"
 
 
 def test_builtin_tools_find_todo_and_secrets():

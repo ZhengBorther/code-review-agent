@@ -41,7 +41,10 @@ class ToolRegistry:
         sanitized_diff = redact_secrets(sanitized_diff).text
         sanitized_request = replace(change_request, diff=sanitized_diff)
         for spec in self.specs:
-            findings.extend(spec.runner(sanitized_request, sanitized_diff))
+            findings.extend(
+                replace(finding, confidence=spec.confidence)
+                for finding in spec.runner(sanitized_request, sanitized_diff)
+            )
         return findings
 
     @classmethod
