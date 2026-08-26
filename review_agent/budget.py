@@ -25,14 +25,31 @@ class BudgetController:
         self.pricing = pricing or MODEL_COST_PER_1K
         self.spent_usd = 0.0
         self._fallback_used = False
+        self.over_budget = False
 
     def estimate_cost(self, model: str, tokens: int) -> float:
         return tokens / 1000 * self.pricing.get(model, self.pricing.get("small", 0.01))
 
     def record_cost(self, amount_usd: float) -> None:
-        self.spent_usd += max(0.0, amount_usd)
+        if self.over_budget:
+            return
+        amount = max(0.0, amount_usd)
+        remaining = max(0.0, self.config.budget_usd - self.spent_usd)
+        if amount > remaining:
+            self.spent_usd = self.config.budget_usd
+            self.over_budget = True
+        else:
+            self.spent_usd += amount
+
+    def accept_response(self, response_cost_usd: float) -> bool:
+        """Record actual usage; return False when it exceeded remaining budget."""
+        before = self.spent_usd
+        self.record_cost(response_cost_usd)
+        return not self.over_budget and response_cost_usd <= max(0.0, self.config.budget_usd - before)
 
     def select(self, model: str, estimated_tokens: int, *, allow_truncate: bool = False) -> Decision:
+        if self.over_budget:
+            return Decision(model=None, allow_llm=False, reason="budget_exceeded")
         remaining = self.config.budget_usd - self.spent_usd
         if self.estimate_cost(model, estimated_tokens) <= remaining:
             return Decision(model=model, allow_llm=True, reason="within_budget")

@@ -16,7 +16,7 @@ MODEL_COST_PER_1K = {"large": 0.03, "small": 0.01}
 
 
 class LLMClient(Protocol):
-    def review(self, prompt: str, model: str) -> LLMResponse: ...
+    def review(self, prompt: str, model: str, *, max_chars: int | None = None, max_tokens: int | None = None) -> LLMResponse: ...
 
 
 def estimate_cost(model: str, prompt_tokens: int, completion_tokens: int = 0) -> float:
@@ -34,9 +34,13 @@ class OpenAICompatibleClient:
         self.api_key = api_key
         self.timeout = timeout
 
-    def review(self, prompt: str, model: str) -> LLMResponse:
+    def review(self, prompt: str, model: str, *, max_chars: int | None = None, max_tokens: int | None = None) -> LLMResponse:
+        if max_chars is not None:
+            prompt = prompt[:max_chars]
         endpoint = self.base_url if self.base_url.endswith("/chat/completions") else self.base_url + "/chat/completions"
         payload = {"model": model, "messages": [{"role": "user", "content": prompt}]}
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
         request = urllib.request.Request(
             endpoint,
             data=json.dumps(payload).encode("utf-8"),
@@ -64,6 +68,8 @@ class OpenAICompatibleClient:
 
 
 class DeterministicClient:
-    def review(self, prompt: str, model: str) -> LLMResponse:
+    def review(self, prompt: str, model: str, *, max_chars: int | None = None, max_tokens: int | None = None) -> LLMResponse:
+        if max_chars is not None:
+            prompt = prompt[:max_chars]
         # Stable output keeps offline runs reproducible and avoids network use.
         return LLMResponse(text=f"Offline review ({model}): {prompt}", model=model)

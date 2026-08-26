@@ -50,6 +50,21 @@ def test_openai_compatible_client_parses_response(monkeypatch):
     assert captured["timeout"] == 7
 
 
+def test_client_applies_truncate_limits(monkeypatch):
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def read(self): return b'{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}'
+    captured = {}
+    def fake(request, timeout):
+        captured["body"] = json.loads(request.data)
+        return Response()
+    monkeypatch.setattr("urllib.request.urlopen", fake)
+    OpenAICompatibleClient("https://example/v1", "key").review("abcdefgh", "small", max_chars=4, max_tokens=2)
+    assert captured["body"]["messages"][0]["content"] == "abcd"
+    assert captured["body"]["max_tokens"] == 2
+
+
 def test_missing_usage_is_estimated_and_marked_unknown(monkeypatch):
     class Response:
         def __enter__(self): return self
@@ -67,3 +82,10 @@ def test_truncate_decision_has_limits():
     assert decision.allow_llm is True
     assert decision.truncate is True
     assert decision.max_chars == decision.max_tokens * 4
+
+
+def test_actual_cost_overrun_locks_budget():
+    controller = BudgetController(RunConfig(url="x", budget_usd=0.01))
+    assert controller.accept_response(0.02) is False
+    assert controller.spent_usd == 0.01
+    assert controller.select("small", 1).allow_llm is False

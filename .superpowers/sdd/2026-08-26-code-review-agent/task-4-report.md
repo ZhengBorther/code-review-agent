@@ -17,4 +17,6 @@ pytest -q                         # 22 passed
 ## 注意事项
 
 - 客户端不会自行记录或持久化 prompt；调用方必须在请求前完成脱敏，符合安全边界。
+- `review` 支持 `max_chars`/`max_tokens`，OneAPI 请求会实际截断 prompt 并传递 token 上限。
+- 实际成本超出剩余预算时会硬封顶并锁定控制器，后续调用全部拒绝。
 - 默认费率为保守估算值，可通过 `BudgetController(pricing=...)` 覆盖。
