@@ -22,8 +22,12 @@ class RedactionResult:
 
 _PRIVATE_KEY = re.compile(r"-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----", re.DOTALL)
 _API_KEY = re.compile(r"\b(?:sk|pk|AKIA)[-_][A-Za-z0-9][A-Za-z0-9_-]{12,}")
+_PLATFORM_TOKEN = re.compile(r"\b(?:ghp_|gho_|glpat-|xoxb-)[A-Za-z0-9_-]{16,}")
+_BEARER = re.compile(r"\bBearer[ \t]+[A-Za-z0-9._~+/=-]{16,}", re.IGNORECASE)
 _TOKEN = re.compile(r"\b(?:token|api[_-]?key|secret)[ \t]*[=:][ \t]*(['\"])([^'\"]{12,})\1", re.IGNORECASE)
 _PASSWORD = re.compile(r"\bpassword[ \t]*[=:][ \t]*(['\"])([^'\"]+)\1", re.IGNORECASE)
+_UNQUOTED_TOKEN = re.compile(r"\b(?:token|api[_-]?key|secret)[ \t]*[=:][ \t]*([A-Za-z0-9._~+/=-]{12,})", re.IGNORECASE)
+_UNQUOTED_PASSWORD = re.compile(r"\bpassword[ \t]*[=:][ \t]*([^\s,;]+)", re.IGNORECASE)
 
 
 def _replacement(kind: str) -> str:
@@ -35,12 +39,19 @@ def redact_secrets(text: str) -> RedactionResult:
     matches: list[SecretMatch] = []
     spans: list[tuple[int, int, str]] = []
 
-    for pattern, kind in ((_PRIVATE_KEY, "private_key"), (_API_KEY, "api_key")):
+    for pattern, kind in ((_PRIVATE_KEY, "private_key"), (_API_KEY, "api_key"), (_PLATFORM_TOKEN, "token"), (_BEARER, "token")):
         for match in pattern.finditer(text):
             spans.append((match.start(), match.end(), kind))
     for pattern, kind in ((_PASSWORD, "password"), (_TOKEN, "token")):
         for match in pattern.finditer(text):
+            if match.group(2).startswith("[REDACTED:"):
+                continue
             spans.append((match.start(2), match.end(2), kind))
+    for pattern, kind in ((_UNQUOTED_PASSWORD, "password"), (_UNQUOTED_TOKEN, "token")):
+        for match in pattern.finditer(text):
+            if match.group(1).startswith("[REDACTED:"):
+                continue
+            spans.append((match.start(1), match.end(1), kind))
 
     # Long quoted assignments are likely credentials when no specific name exists.
     for match in re.finditer(r"(['\"])([^'\"\n]{24,})\1", text):

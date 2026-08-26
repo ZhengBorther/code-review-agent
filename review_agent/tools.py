@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from dataclasses import replace
 from typing import Callable
 
 from .models import ChangeRequest, Finding
@@ -29,14 +30,18 @@ class ToolRegistry:
         self.specs: list[ToolSpec] = []
 
     def register(self, spec: ToolSpec) -> None:
+        if spec.confidence not in ("high", "advisory"):
+            raise ValueError("confidence must be 'high' or 'advisory'")
         if any(existing.name == spec.name for existing in self.specs):
             raise ValueError(f"tool already registered: {spec.name}")
         self.specs.append(spec)
 
     def run_all(self, change_request: ChangeRequest, sanitized_diff: str) -> list[Finding]:
         findings: list[Finding] = []
+        sanitized_diff = redact_secrets(sanitized_diff).text
+        sanitized_request = replace(change_request, diff=sanitized_diff)
         for spec in self.specs:
-            findings.extend(spec.runner(change_request, sanitized_diff))
+            findings.extend(spec.runner(sanitized_request, sanitized_diff))
         return findings
 
     @classmethod
@@ -57,9 +62,8 @@ def _todo_runner(change_request: ChangeRequest, diff: str) -> list[Finding]:
     return findings
 
 
-def _secret_runner(change_request: ChangeRequest, _sanitized_diff: str) -> list[Finding]:
-    result = redact_secrets(change_request.diff)
-    if not result.matches:
+def _secret_runner(_change_request: ChangeRequest, sanitized_diff: str) -> list[Finding]:
+    if "[REDACTED:" not in sanitized_diff:
         return []
-    kinds = ", ".join(sorted({match.kind for match in result.matches}))
+    kinds = ", ".join(sorted(set(re.findall(r"\[REDACTED:([^]]+)\]", sanitized_diff))))
     return [Finding("Secret detected in diff", f"Remove or rotate detected secret ({kinds}).", "high", evidence="tool:secret-in-diff")]

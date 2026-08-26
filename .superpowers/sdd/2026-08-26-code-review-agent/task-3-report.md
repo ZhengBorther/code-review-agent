@@ -19,9 +19,16 @@
 
 ## Commit
 
-待提交：`feat: add safe adapters redaction and tool registry`
+初始提交：`f6adcb2` (`feat: add safe adapters redaction and tool registry`)
+
+修复提交：待提交，补强 runner 脱敏边界、平台 token 规则和注册时 confidence 校验。
 
 ## Concerns
 
 - 当前适配器是离线本地实现；GitHub/GitLab 网络适配器需在后续任务中实现。
-- secret 规则是启发式检测，不能替代专用 secret scanner；原始 diff 仅供本地规则使用，发送 LLM 前必须调用 `redact_secrets`。
+- secret 规则是启发式检测，不能替代专用 secret scanner；工具 runner 只接收脱敏后的 `ChangeRequest` 和 diff，发送 LLM 前仍必须调用 `redact_secrets`。
+
+## 修复验证
+
+- `pytest -q tests/test_security_tools.py`：9 passed
+- `pytest -q`：18 passed
