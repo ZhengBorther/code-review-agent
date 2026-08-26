@@ -84,5 +84,6 @@ class RunConfig(_Serializable):
     fallback_model: str = "small"
     offline: bool = False
     max_diff_chars: int = 12000
+    completion_tokens: int = 512
     output_path: str = "review.md"
     state_dir: str = ".review-state"

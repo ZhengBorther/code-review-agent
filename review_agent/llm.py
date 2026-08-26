@@ -55,8 +55,8 @@ class OpenAICompatibleClient:
             raise ValueError("invalid chat-completions response") from exc
         usage = data.get("usage") or {}
         usage_known = "prompt_tokens" in usage or "completion_tokens" in usage
-        prompt_tokens = int(usage.get("prompt_tokens", estimate_tokens(prompt)) or 0)
-        completion_tokens = int(usage.get("completion_tokens", estimate_tokens(str(text))) or 0)
+        prompt_tokens = int(usage.get("prompt_tokens") or estimate_tokens(prompt))
+        completion_tokens = int(usage.get("completion_tokens") or estimate_tokens(str(text)))
         return LLMResponse(
             text=str(text),
             model=model,

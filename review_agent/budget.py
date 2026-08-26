@@ -26,9 +26,22 @@ class BudgetController:
         self.spent_usd = 0.0
         self._fallback_used = False
         self.over_budget = False
+        self.reserved_usd = 0.0
 
     def estimate_cost(self, model: str, tokens: int) -> float:
         return tokens / 1000 * self.pricing.get(model, self.pricing.get("small", 0.01))
+
+    def reserve(self, model: str, estimated_tokens: int) -> bool:
+        """Atomically reserve prompt plus completion allowance before calling an LLM."""
+        amount = self.estimate_cost(model, estimated_tokens + self.config.completion_tokens)
+        if amount > max(0.0, self.config.budget_usd - self.spent_usd - self.reserved_usd):
+            return False
+        self.reserved_usd += amount
+        return True
+
+    def commit(self, actual_cost_usd: float, reserved_usd: float = 0.0) -> bool:
+        self.reserved_usd = max(0.0, self.reserved_usd - max(0.0, reserved_usd))
+        return self.accept_response(actual_cost_usd)
 
     def record_cost(self, amount_usd: float) -> None:
         if self.over_budget:
@@ -50,14 +63,15 @@ class BudgetController:
     def select(self, model: str, estimated_tokens: int, *, allow_truncate: bool = False) -> Decision:
         if self.over_budget:
             return Decision(model=None, allow_llm=False, reason="budget_exceeded")
-        remaining = self.config.budget_usd - self.spent_usd
-        if self.estimate_cost(model, estimated_tokens) <= remaining:
+        remaining = self.config.budget_usd - self.spent_usd - self.reserved_usd
+        estimated_total = estimated_tokens + self.config.completion_tokens
+        if self.estimate_cost(model, estimated_total) <= remaining:
             return Decision(model=model, allow_llm=True, reason="within_budget")
 
         fallback = self.config.fallback_model
         if model != fallback and not self._fallback_used:
             self._fallback_used = True
-            if self.estimate_cost(fallback, estimated_tokens) <= remaining:
+            if self.estimate_cost(fallback, estimated_total) <= remaining:
                 return Decision(model=fallback, allow_llm=True, reason="fallback_model")
             if allow_truncate:
                 return self._truncate_or_disable(fallback, remaining, estimated_tokens)
@@ -67,14 +81,14 @@ class BudgetController:
         # token and make the resulting decision explicit for the pipeline.
         rate = self.pricing.get(model, self.pricing.get("small", 0.01))
         if allow_truncate and remaining > 0 and rate > 0:
-            max_tokens = int(remaining / rate * 1000)
+            max_tokens = int(remaining / rate * 1000) - self.config.completion_tokens
             if max_tokens > 0 and max_tokens < estimated_tokens:
                 return Decision(model=model, allow_llm=True, truncate=True, max_tokens=max_tokens, max_chars=max_tokens * 4, estimated_tokens=max_tokens, reason="truncate_context")
         return Decision(model=None, allow_llm=False, reason="budget_exceeded")
 
     def _truncate_or_disable(self, model: str, remaining: float, estimated_tokens: int) -> Decision:
         rate = self.pricing.get(model, self.pricing.get("small", 0.01))
-        max_tokens = int(remaining / rate * 1000) if rate > 0 else 0
+        max_tokens = int(remaining / rate * 1000) - self.config.completion_tokens if rate > 0 else 0
         if 0 < max_tokens < estimated_tokens:
             return Decision(model=model, allow_llm=True, truncate=True, max_tokens=max_tokens, max_chars=max_tokens * 4, estimated_tokens=max_tokens, reason="truncate_context")
         return Decision(model=None, allow_llm=False, reason="fallback_over_budget")
