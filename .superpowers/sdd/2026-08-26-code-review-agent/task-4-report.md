@@ -19,4 +19,6 @@ pytest -q                         # 22 passed
 - 客户端不会自行记录或持久化 prompt；调用方必须在请求前完成脱敏，符合安全边界。
 - `review` 支持 `max_chars`/`max_tokens`，OneAPI 请求会实际截断 prompt 并传递 token 上限。
 - 实际成本超出剩余预算时会硬封顶并锁定控制器，后续调用全部拒绝。
+- 预算估算包含 `RunConfig.completion_tokens` 预留；`reserve`/`commit` 可在并发请求前锁定预算。
+- provider 返回 usage 缺失或 0/0 时按本地文本估算 token 和成本。
 - 默认费率为保守估算值，可通过 `BudgetController(pricing=...)` 覆盖。
