@@ -41,7 +41,10 @@ class GitHubAdapter:
         request = Request(f"https://api.github.com/repos/{owner}/{repo}/pulls/{number}", headers=headers)
         with urlopen(request, timeout=self.timeout) as response:
             metadata = json.loads(response.read())
-        diff_request = Request(metadata["diff_url"], headers={"User-Agent": "code-review-agent"})
+        diff_headers = {"User-Agent": "code-review-agent"}
+        if self.token:
+            diff_headers["Authorization"] = f"Bearer {self.token}"
+        diff_request = Request(metadata["diff_url"], headers=diff_headers)
         with urlopen(diff_request, timeout=self.timeout) as response:
             diff = response.read().decode("utf-8")
         return ChangeRequest(url=url, title=metadata.get("title", ""), author=metadata.get("user", {}).get("login", ""), diff=diff, source="github")

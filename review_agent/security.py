@@ -21,7 +21,7 @@ class RedactionResult:
 
 
 _PRIVATE_KEY = re.compile(r"-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----", re.DOTALL)
-_API_KEY = re.compile(r"\b(?:sk|pk|AKIA)[-_][A-Za-z0-9][A-Za-z0-9_-]{12,}")
+_API_KEY = re.compile(r"\b(?:sk|pk)[-_][A-Za-z0-9][A-Za-z0-9_-]{12,}|\bAKIA[0-9A-Z]{16}\b")
 _PLATFORM_TOKEN = re.compile(r"\b(?:ghp_|gho_|glpat-|xoxb-)[A-Za-z0-9_-]{16,}")
 _BEARER = re.compile(r"\bBearer[ \t]+[A-Za-z0-9._~+/=-]{16,}", re.IGNORECASE)
 _TOKEN = re.compile(r"\b(?:token|api[_-]?key|secret)[ \t]*[=:][ \t]*(['\"])([^'\"]{12,})\1", re.IGNORECASE)

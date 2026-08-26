@@ -29,6 +29,11 @@ def test_redaction_handles_platform_tokens_and_unquoted_credentials():
     assert {match.kind for match in result.matches} >= {"token", "password"}
 
 
+def test_redaction_hides_aws_access_key():
+    result = redact_secrets("aws_access_key = AKIAIOSFODNN7EXAMPLE")
+    assert "AKIAIOSFODNN7EXAMPLE" not in result.text
+
+
 def test_tool_registry_is_declarative_and_runs_registered_tools():
     registry = ToolRegistry()
     registry.register(ToolSpec(name="constant", description="test", runner=lambda _c, _d: [], confidence="high"))
