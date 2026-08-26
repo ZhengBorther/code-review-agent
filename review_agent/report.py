@@ -17,7 +17,7 @@ def render_markdown(result: ReviewResult) -> str:
         "# Code Review",
         "",
         f"- Run ID: `{result.run_id}`",
-        f"- URL: `{result.request.url}`",
+        f"- URL: `{_safe(result.request.url)}`",
         f"- 预算: ${result.cost_usd:.4f} / ${result.budget_usd:.4f}",
         f"- Findings: {len(result.findings)} (高置信度 {len(high)}, 建议 {len(advisory)})",
         "",
@@ -39,9 +39,9 @@ def render_markdown(result: ReviewResult) -> str:
     lines.extend(["## Trace 附录", ""])
     for trace in result.traces:
         lines.extend([
-            f"### `{trace.get('trace_id', '')}`",
-            f"- 类型: {trace.get('kind', '')}; 工具: {trace.get('tool_name', '') or '-'}; 模型: {trace.get('model', '') or '-'}",
-            f"- 输入哈希: `{trace.get('input_hash', '')}`; 成本: ${float(trace.get('cost_usd', 0.0)):.6f}",
+            f"### `{_safe(str(trace.get('trace_id', '')))}`",
+            f"- 类型: {_safe(str(trace.get('kind', '')))}; 工具: {_safe(str(trace.get('tool_name', '') or '-'))}; 模型: {_safe(str(trace.get('model', '') or '-'))}",
+            f"- 输入哈希: `{_safe(str(trace.get('input_hash', '')))}`; 成本: ${float(trace.get('cost_usd', 0.0)):.6f}; Prompt tokens: {trace.get('prompt_tokens', 0)}; Completion tokens: {trace.get('completion_tokens', 0)}; 耗时: {trace.get('duration_ms', 0)}ms; 错误: {_safe(str(trace.get('error', '') or '-'))}",
             "- Prompt:",
             "```text",
             _safe(str(trace.get("prompt", ""))),
@@ -58,12 +58,12 @@ def render_markdown(result: ReviewResult) -> str:
 def _finding_lines(finding) -> list[str]:
     location = ""
     if finding.file_path:
-        location = f" ({finding.file_path}"
+        location = f" ({_safe(finding.file_path)}"
         if finding.line_start is not None:
             location += f":{finding.line_start}"
         location += ")"
     return [
-        f"### {finding.title}{location}",
+        f"### {_safe(finding.title)}{location}",
         "",
         _safe(finding.body),
         "",
