@@ -36,6 +36,7 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _run_review(args: argparse.Namespace) -> int:
+    url = args.url or ""
     if args.run_id is None and args.diff_file is None and not args.url:
         raise ValueError("provide a PR/MR URL or --diff-file")
     if args.diff_file is not None:
