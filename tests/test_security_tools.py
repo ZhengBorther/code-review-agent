@@ -1,4 +1,4 @@
-from review_agent.adapters import LocalDiffAdapter
+from review_agent.adapters import GitHubAdapter, GitLabAdapter, LocalDiffAdapter
 from review_agent.models import ChangeRequest, Finding
 from review_agent.security import redact_secrets
 from review_agent.tools import ToolRegistry, ToolSpec
@@ -96,3 +96,30 @@ def test_local_diff_adapter_rejects_non_local_url(tmp_path):
         assert "local" in str(exc)
     else:
         raise AssertionError("non-local URL must be rejected")
+
+
+def test_github_adapter_fetches_metadata_and_diff(monkeypatch):
+    calls = []
+    def fake_open(request, timeout=0):
+        calls.append(request)
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+            def read(self):
+                return b'{"title":"Fix bug","user":{"login":"alice"},"diff_url":"https://github.com/acme/repo/pull/7.diff"}' if len(calls) == 1 else b'diff --git a/a.py b/a.py\n+pass\n'
+        return Response()
+    monkeypatch.setattr("review_agent.adapters.urlopen", fake_open)
+    result = GitHubAdapter(token="secret").fetch("https://github.com/acme/repo/pull/7")
+    assert result.title == "Fix bug" and "+pass" in result.diff and len(calls) == 2
+
+
+def test_gitlab_adapter_fetches_merge_request_changes(monkeypatch):
+    def fake_open(request, timeout=0):
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+            def read(self): return b'{"title":"Improve","author":{"username":"bob"},"changes":[{"diff":"@@ -1 +1 @@\\n-old\\n+new"}]}'
+        return Response()
+    monkeypatch.setattr("review_agent.adapters.urlopen", fake_open)
+    result = GitLabAdapter(token="secret").fetch("https://gitlab.com/acme/repo/-/merge_requests/3")
+    assert result.title == "Improve" and "+new" in result.diff

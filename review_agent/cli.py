@@ -52,9 +52,9 @@ def _run_review(args: argparse.Namespace) -> int:
     else:
         host = (urlparse(args.url).hostname or "").lower()
         if host == "github.com" or host.endswith(".github.com"):
-            adapter = GitHubAdapter()
+            adapter = GitHubAdapter(token=os.getenv("GITHUB_TOKEN"))
         elif host == "gitlab.com" or "gitlab" in host:
-            adapter = GitLabAdapter()
+            adapter = GitLabAdapter(token=os.getenv("GITLAB_TOKEN"))
         else:
             raise ValueError("unsupported change-request URL; expected GitHub or GitLab PR/MR")
 
