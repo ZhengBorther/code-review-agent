@@ -24,6 +24,10 @@ def estimate_cost(model: str, prompt_tokens: int, completion_tokens: int = 0) ->
     return (prompt_tokens + completion_tokens) / 1000 * rate
 
 
+def estimate_tokens(text: str) -> int:
+    return max(1, (len(text) + 3) // 4)
+
+
 class OpenAICompatibleClient:
     def __init__(self, base_url: str, api_key: str, timeout: float = 30.0):
         self.base_url = base_url.rstrip("/")
@@ -46,14 +50,16 @@ class OpenAICompatibleClient:
         except (KeyError, IndexError, TypeError) as exc:
             raise ValueError("invalid chat-completions response") from exc
         usage = data.get("usage") or {}
-        prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
-        completion_tokens = int(usage.get("completion_tokens", 0) or 0)
+        usage_known = "prompt_tokens" in usage or "completion_tokens" in usage
+        prompt_tokens = int(usage.get("prompt_tokens", estimate_tokens(prompt)) or 0)
+        completion_tokens = int(usage.get("completion_tokens", estimate_tokens(str(text))) or 0)
         return LLMResponse(
             text=str(text),
             model=model,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             cost_usd=estimate_cost(model, prompt_tokens, completion_tokens),
+            usage_known=usage_known,
         )
 
 

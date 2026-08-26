@@ -73,6 +73,7 @@ class LLMResponse(_Serializable):
     prompt_tokens: int = 0
     completion_tokens: int = 0
     cost_usd: float = 0.0
+    usage_known: bool = True
 
 
 @dataclass(frozen=True)
@@ -85,4 +86,3 @@ class RunConfig(_Serializable):
     max_diff_chars: int = 12000
     output_path: str = "review.md"
     state_dir: str = ".review-state"
-

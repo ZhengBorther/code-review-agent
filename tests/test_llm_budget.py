@@ -7,7 +7,7 @@ from review_agent.models import RunConfig
 
 def test_budget_selects_fallback_then_no_llm():
     controller = BudgetController(RunConfig(url="x", budget_usd=0.01, model="large", fallback_model="small"))
-    assert controller.select("large", 100000).model == "small"
+    assert controller.select("large", 100000).allow_llm is False
     assert controller.select("small", 100000).allow_llm is False
 
 
@@ -48,3 +48,22 @@ def test_openai_compatible_client_parses_response(monkeypatch):
     assert captured["body"]["messages"][0]["content"] == "safe prompt"
     assert captured["headers"]["Authorization"] == "Bearer key"
     assert captured["timeout"] == 7
+
+
+def test_missing_usage_is_estimated_and_marked_unknown(monkeypatch):
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def read(self): return b'{"choices":[{"message":{"content":"ok"}}]}'
+    monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout: Response())
+    response = OpenAICompatibleClient("https://example/v1", "key").review("abcd", "small")
+    assert response.usage_known is False
+    assert response.cost_usd > 0
+
+
+def test_truncate_decision_has_limits():
+    controller = BudgetController(RunConfig(url="x", budget_usd=0.01, model="large", fallback_model="small"))
+    decision = controller.select("small", 100000, allow_truncate=True)
+    assert decision.allow_llm is True
+    assert decision.truncate is True
+    assert decision.max_chars == decision.max_tokens * 4

@@ -14,6 +14,8 @@ class Decision:
     allow_llm: bool
     truncate: bool = False
     max_tokens: int | None = None
+    max_chars: int | None = None
+    estimated_tokens: int | None = None
     reason: str = ""
 
 
@@ -30,7 +32,7 @@ class BudgetController:
     def record_cost(self, amount_usd: float) -> None:
         self.spent_usd += max(0.0, amount_usd)
 
-    def select(self, model: str, estimated_tokens: int) -> Decision:
+    def select(self, model: str, estimated_tokens: int, *, allow_truncate: bool = False) -> Decision:
         remaining = self.config.budget_usd - self.spent_usd
         if self.estimate_cost(model, estimated_tokens) <= remaining:
             return Decision(model=model, allow_llm=True, reason="within_budget")
@@ -40,16 +42,22 @@ class BudgetController:
             self._fallback_used = True
             if self.estimate_cost(fallback, estimated_tokens) <= remaining:
                 return Decision(model=fallback, allow_llm=True, reason="fallback_model")
-            # Surface the fallback choice once; reserve the remaining budget
-            # so a repeated request is deterministically disabled.
-            self.spent_usd = self.config.budget_usd
-            return Decision(model=fallback, allow_llm=True, reason="fallback_model")
+            if allow_truncate:
+                return self._truncate_or_disable(fallback, remaining, estimated_tokens)
+            return Decision(model=None, allow_llm=False, reason="fallback_over_budget")
 
         # Truncation is useful when some budget remains; reserve at least one
         # token and make the resulting decision explicit for the pipeline.
         rate = self.pricing.get(model, self.pricing.get("small", 0.01))
-        if remaining > 0 and rate > 0 and model != self.config.fallback_model:
+        if allow_truncate and remaining > 0 and rate > 0:
             max_tokens = int(remaining / rate * 1000)
             if max_tokens > 0 and max_tokens < estimated_tokens:
-                return Decision(model=model, allow_llm=True, truncate=True, max_tokens=max_tokens, reason="truncate_context")
+                return Decision(model=model, allow_llm=True, truncate=True, max_tokens=max_tokens, max_chars=max_tokens * 4, estimated_tokens=max_tokens, reason="truncate_context")
         return Decision(model=None, allow_llm=False, reason="budget_exceeded")
+
+    def _truncate_or_disable(self, model: str, remaining: float, estimated_tokens: int) -> Decision:
+        rate = self.pricing.get(model, self.pricing.get("small", 0.01))
+        max_tokens = int(remaining / rate * 1000) if rate > 0 else 0
+        if 0 < max_tokens < estimated_tokens:
+            return Decision(model=model, allow_llm=True, truncate=True, max_tokens=max_tokens, max_chars=max_tokens * 4, estimated_tokens=max_tokens, reason="truncate_context")
+        return Decision(model=None, allow_llm=False, reason="fallback_over_budget")

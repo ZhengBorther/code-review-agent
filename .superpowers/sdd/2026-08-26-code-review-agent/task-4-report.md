@@ -4,8 +4,8 @@
 
 - 新增 `OpenAICompatibleClient`，通过标准库 `urllib.request` 调用 OpenAI chat-completions 兼容接口（包括 OneAPI），解析文本与 usage。
 - 新增 `DeterministicClient`，用于离线、可重复的评审运行。
-- 新增 `BudgetController` 与 `Decision`，记录成本并实现主模型 -> fallback 模型 -> 超预算禁用的策略；支持显式截断决策字段。
-- 成本估算使用按千 token 的模型费率，响应中的 prompt/completion usage 会写入 `LLMResponse.cost_usd`。
+- 新增 `BudgetController` 与 `Decision`，严格保证选中模型估算成本不超过剩余预算；fallback 仍超预算时禁用 LLM。通过 `allow_truncate=True` 可获得带 `max_tokens`、`max_chars` 和 `estimated_tokens` 的可执行截断决策。
+- 成本估算使用按千 token 的模型费率，响应中的 prompt/completion usage 会写入 `LLMResponse.cost_usd`。服务端缺失 usage 时按文本长度估算并将 `usage_known=False`，避免被误计为零成本。
 
 ## 验证
 
