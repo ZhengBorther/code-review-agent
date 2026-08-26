@@ -146,6 +146,18 @@ class StateStore:
         result["config"] = json.loads(result.pop("config_json"))
         return result
 
+    def find_latest_run(self, url: str) -> dict[str, Any] | None:
+        """Return the most recently updated run for a stable source URL."""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM runs WHERE url = ? ORDER BY updated_at DESC LIMIT 1", (url,)
+            ).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        result["config"] = json.loads(result.pop("config_json"))
+        return result
+
     def update_run_cost(self, run_id: str, amount_usd: float) -> None:
         with self._connect() as connection:
             cursor = connection.execute(

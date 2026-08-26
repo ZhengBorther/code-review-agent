@@ -20,6 +20,7 @@ def _parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command")
     review = sub.add_parser("review", help="review a pull/merge request diff")
     review.add_argument("url", nargs="?", help="change request URL (use --diff-file for local/offline review)")
+    review.add_argument("--run-id", help="resume an existing run by ID")
     review.add_argument("--diff-file", type=Path, help="path to an explicit unified diff file")
     review.add_argument("--output", type=Path, default=Path("review.md"), help="Markdown report path")
     review.add_argument("--state-dir", type=Path, default=Path(".review-state"), help="directory for SQLite checkpoints/traces")
@@ -33,11 +34,14 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _run_review(args: argparse.Namespace) -> int:
-    if args.diff_file is None and not args.url:
+    if args.run_id is None and args.diff_file is None and not args.url:
         raise ValueError("provide a PR/MR URL or --diff-file")
     if args.diff_file is not None:
         url = args.url or "local://diff"
         adapter = LocalDiffAdapter(args.diff_file)
+    elif args.run_id is not None:
+        url = args.url or "local://diff"
+        adapter = LocalDiffAdapter(Path("__unused_diff_for_resume__"))
     else:
         raise ValueError("remote GitHub/GitLab adapters are not configured in this release; use --diff-file")
 
@@ -60,7 +64,11 @@ def _run_review(args: argparse.Namespace) -> int:
         state_dir=str(args.state_dir),
     )
     store = StateStore(args.state_dir / "state.db")
-    result = ReviewPipeline(store, adapter, ToolRegistry.with_builtins(), client, config).run(url)
+    run_target = args.run_id
+    if not run_target:
+        existing = store.find_latest_run(url)
+        run_target = existing["run_id"] if existing else url
+    result = ReviewPipeline(store, adapter, ToolRegistry.with_builtins(), client, config).run(run_target)
     args.output.write_text(result.markdown, encoding="utf-8")
     return 0
 
