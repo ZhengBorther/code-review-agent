@@ -78,9 +78,11 @@ def _run_review(args: argparse.Namespace) -> int:
     )
     store = StateStore(args.state_dir / "state.db")
     run_target = args.run_id
-    if not run_target:
+    if not run_target and url.startswith("local://"):
         existing = store.find_latest_run(url)
         run_target = existing["run_id"] if existing else url
+    if not run_target:
+        run_target = url
     result = ReviewPipeline(store, adapter, ToolRegistry.with_builtins(), client, config).run(run_target)
     args.output.write_text(result.markdown, encoding="utf-8")
     return 0
