@@ -1,6 +1,6 @@
 # Code Review Agent
 
-一个可恢复、可审计的本地 Code Review CLI。首版从显式 unified diff 生成 Markdown 报告；GitHub/GitLab 适配器可按相同接口扩展。
+一个可恢复、可审计的 Code Review CLI。支持显式 unified diff，也支持只读获取 GitHub Pull Request / GitLab Merge Request diff，最终生成本地 Markdown 报告。
 
 ## 离线运行
 
@@ -27,6 +27,10 @@ python3 -m review_agent review --diff-file change.diff --output report.md
 ```
 
 可选参数包括 `--model`、`--fallback-model` 和 `--budget-usd`。预算不足时会依次尝试降级模型、截断上下文，最后只保留规则工具结果。
+
+## GitHub / GitLab
+
+直接传入 PR/MR URL 即可读取变更元数据和 diff；私有项目分别使用 `GITHUB_TOKEN`、`GITLAB_TOKEN`。适配器只发起只读 HTTP 请求，不克隆仓库，也不执行仓库代码。首版仍只生成本地报告，不会向远端发布评论。
 
 ## 安全边界
 
