@@ -95,7 +95,7 @@ def test_completion_reservation_can_reject_prompt_only_budget():
     config = RunConfig(url="x", budget_usd=0.01, model="small", fallback_model="small", completion_tokens=512)
     controller = BudgetController(config)
     assert controller.select("small", 500).allow_llm is False
-    assert controller.reserve("small", 400) is True
+    assert controller.reserve("small", 400) is not None
     assert controller.select("small", 400).allow_llm is False
 
 
@@ -106,5 +106,14 @@ def test_zero_usage_is_charged_using_estimate(monkeypatch):
         def read(self): return b'{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":0,"completion_tokens":0}}'
     monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout: Response())
     response = OpenAICompatibleClient("https://example/v1", "key").review("abcd", "small")
-    assert response.usage_known is True
+    assert response.usage_known is False
     assert response.cost_usd > 0
+
+
+def test_reservation_commit_releases_and_rejects_reuse():
+    controller = BudgetController(RunConfig(url="x", budget_usd=1.0, model="small", completion_tokens=1))
+    reservation = controller.reserve("small", 10)
+    assert reservation is not None and reservation.reserved_usd > 0
+    assert controller.commit(reservation, 0.001) is True
+    assert controller.reserved_usd == 0
+    assert controller.commit(reservation, 0.001) is False

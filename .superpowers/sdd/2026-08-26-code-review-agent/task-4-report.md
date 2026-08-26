@@ -21,4 +21,5 @@ pytest -q                         # 22 passed
 - 实际成本超出剩余预算时会硬封顶并锁定控制器，后续调用全部拒绝。
 - 预算估算包含 `RunConfig.completion_tokens` 预留；`reserve`/`commit` 可在并发请求前锁定预算。
 - provider 返回 usage 缺失或 0/0 时按本地文本估算 token 和成本。
+- `reserve` 返回带唯一 token 的 `Reservation`，`commit` 校验并释放预留，重复或无效 token 会被拒绝；仅完整正数 usage 标记为已知。
 - 默认费率为保守估算值，可通过 `BudgetController(pricing=...)` 覆盖。

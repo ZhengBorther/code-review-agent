@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from uuid import uuid4
 
 from .llm import MODEL_COST_PER_1K
 from .models import RunConfig
@@ -18,6 +19,11 @@ class Decision:
     estimated_tokens: int | None = None
     reason: str = ""
 
+@dataclass(frozen=True)
+class Reservation:
+    token: str
+    reserved_usd: float
+
 
 class BudgetController:
     def __init__(self, config: RunConfig, pricing: dict[str, float] | None = None):
@@ -27,20 +33,27 @@ class BudgetController:
         self._fallback_used = False
         self.over_budget = False
         self.reserved_usd = 0.0
+        self._reservations: dict[str, float] = {}
 
     def estimate_cost(self, model: str, tokens: int) -> float:
         return tokens / 1000 * self.pricing.get(model, self.pricing.get("small", 0.01))
 
-    def reserve(self, model: str, estimated_tokens: int) -> bool:
+    def reserve(self, model: str, estimated_tokens: int) -> Reservation | None:
         """Atomically reserve prompt plus completion allowance before calling an LLM."""
         amount = self.estimate_cost(model, estimated_tokens + self.config.completion_tokens)
         if amount > max(0.0, self.config.budget_usd - self.spent_usd - self.reserved_usd):
-            return False
+            return None
         self.reserved_usd += amount
-        return True
+        token = Reservation(str(uuid4()), amount)
+        self._reservations[token.token] = amount
+        return token
 
-    def commit(self, actual_cost_usd: float, reserved_usd: float = 0.0) -> bool:
-        self.reserved_usd = max(0.0, self.reserved_usd - max(0.0, reserved_usd))
+    def commit(self, token: Reservation | str | None, actual_cost_usd: float) -> bool:
+        token_id = token.token if isinstance(token, Reservation) else token
+        if not token_id or token_id not in self._reservations:
+            return False
+        amount = self._reservations.pop(token_id)
+        self.reserved_usd = max(0.0, self.reserved_usd - amount)
         return self.accept_response(actual_cost_usd)
 
     def record_cost(self, amount_usd: float) -> None:
