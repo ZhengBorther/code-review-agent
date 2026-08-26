@@ -1,27 +1,27 @@
-# Code Review Agent Design
+# Code Review Agent 设计
 
-## Goal
+## 目标
 
-Build a Python CLI that accepts a GitHub/GitLab pull request URL or an explicit local diff and produces an auditable Markdown code-review report. The first release is local-only for output, with interfaces ready for remote publishing later.
+构建一个 Python CLI：输入 GitHub/GitLab Pull Request 或 Merge Request 链接（也支持显式的本地 diff 文件），输出可审计的 Markdown Code Review 报告。首版只在本地生成报告，同时为未来远端回评保留接口。
 
-## Architecture
+## 架构
 
-The system is a checkpointed pipeline with five stages: `fetch`, `sanitize`, `tools`, `review`, and `render`. A `ChangeRequestAdapter` provides metadata and a unified diff; the sanitizer removes secrets before any model call; registered tools produce structured findings; an injected LLM client produces advisory findings; and the renderer writes Markdown with confidence labels and trace IDs.
+系统采用带 checkpoint 的五阶段流水线：`fetch`、`sanitize`、`tools`、`review`、`render`。`ChangeRequestAdapter` 提供变更请求元信息和 unified diff；安全层在任何模型调用前移除 secret；已注册工具产出结构化 finding；注入的 LLM 客户端产出建议型 finding；渲染器生成带置信度标签和 trace ID 的 Markdown。
 
-The CLI uses a stable `run_id` and SQLite state. Each stage stores a JSON result and is skipped when a matching successful checkpoint already exists, so an interrupted run resumes without repeating completed work. The original diff is retained locally and referenced by SHA-256 rather than sent to the model when it contains secrets.
+CLI 使用稳定的 `run_id` 和 SQLite 状态库。每个阶段保存 JSON 结果；恢复运行时跳过已有成功 checkpoint，避免重复执行已完成阶段。原始 diff 仅保存在本地，并记录 SHA-256；含 secret 的内容不会发送给模型。
 
-## Components
+## 组件
 
-- `review_agent/cli.py`: command parsing, configuration, and exit codes.
-- `review_agent/adapters.py`: `ChangeRequestAdapter` protocol plus local diff implementation; GitHub/GitLab implementations can be added without changing orchestration.
-- `review_agent/pipeline.py`: stage ordering, checkpoint resume, budget decisions, and result aggregation.
-- `review_agent/tools.py`: `ToolSpec`, registry, and built-in safe analyzers. New tools are registered declaratively.
-- `review_agent/security.py`: secret detection and deterministic redaction.
-- `review_agent/llm.py`: `LLMClient` protocol, OneAPI-compatible OpenAI client, and deterministic offline client.
-- `review_agent/storage.py`: SQLite schema and atomic checkpoint/trace operations.
-- `review_agent/report.py`: deterministic Markdown rendering.
+- `review_agent/cli.py`：命令解析、配置读取和退出码。
+- `review_agent/adapters.py`：`ChangeRequestAdapter` 协议及本地 diff 实现；新增 GitHub/GitLab 实现无需修改编排流程。
+- `review_agent/pipeline.py`：阶段顺序、checkpoint 恢复、预算决策和结果汇总。
+- `review_agent/tools.py`：`ToolSpec`、注册表及内置安全分析器；新增工具只需声明式注册。
+- `review_agent/security.py`：secret 检测和确定性脱敏。
+- `review_agent/llm.py`：`LLMClient` 协议、兼容 OneAPI 的 OpenAI 客户端及离线确定性客户端。
+- `review_agent/storage.py`：SQLite schema 及原子 checkpoint/trace 操作。
+- `review_agent/report.py`：确定性的 Markdown 渲染。
 
-## Interfaces
+## 接口
 
 ```python
 class ChangeRequestAdapter(Protocol):
@@ -38,30 +38,30 @@ class ToolSpec:
     confidence: Literal["high", "advisory"]
 ```
 
-`Finding` includes `title`, `body`, optional file/line location, confidence, evidence, and trace ID. `LLMResponse` includes text plus prompt/completion token counts and estimated cost.
+`Finding` 包含 `title`、`body`、可选的文件/行号位置、置信度、证据和 trace ID。`LLMResponse` 包含文本、prompt/completion token 数量及估算成本。
 
-## Persistence and Recovery
+## 持久化与恢复
 
-SQLite tables are `runs`, `checkpoints`, and `traces`. A run stores URL, configuration snapshot, budget, accumulated cost, and status. A checkpoint stores stage, status, JSON output, and timestamps. A trace stores tool name, input/diff hash, exact prompt and model reply (with secrets already redacted), model, usage, cost, duration, and errors. Checkpoint writes occur in transactions; a failed stage is retried on the next invocation.
+SQLite 表为 `runs`、`checkpoints` 和 `traces`。run 保存 URL、配置快照、预算、累计成本和状态；checkpoint 保存阶段、状态、JSON 输出及时间戳；trace 保存工具名、输入/diff 哈希、完整 prompt 和模型回复（均已脱敏）、模型、用量、成本、耗时和错误。checkpoint 写入使用事务；失败阶段会在下一次调用时重试。
 
-## Budget and Model Degradation
+## 预算与模型降级
 
-`--budget-usd` defaults to a small explicit value and is enforced before each LLM call. When the estimated call would exceed the remaining budget, the pipeline switches to `fallback_model`, then truncates the sanitized diff to a configured character limit, and finally disables LLM review while retaining deterministic findings. The report includes the actual spend and any degradation reason. Network retries have a bounded count and each attempt has its own trace.
+`--budget-usd` 设置总预算，并提供明确的小额默认值；每次 LLM 调用前检查剩余预算。预计调用将超预算时依次执行：切换 `fallback_model`、将脱敏后的 diff 截断到配置的字符上限、最终关闭 LLM 评审但保留确定性规则结果。报告记录实际花费和降级原因。网络重试次数有上限，每次尝试都有独立 trace。
 
-## Security Boundaries
+## 安全边界
 
-Secret detection covers common API keys/tokens, private keys, password assignments, and high-entropy values. Matches are replaced with stable placeholders before prompts are built. Original diffs stay on disk under the state directory and are never included in LLM request payloads after redaction. No repository command is executed by default. Any future command tool must declare an executable allowlist, working directory, and timeout; undeclared commands are rejected.
+Secret 检测覆盖常见 API key/token、私钥、密码赋值和高熵值。匹配内容在构造 prompt 前替换为稳定占位符。原始 diff 保存在状态目录中，LLM 请求只包含脱敏后的内容。默认不执行仓库命令；未来的命令型工具必须声明可执行文件白名单、工作目录和超时时间，未声明的命令一律拒绝。
 
-## Reporting
+## 报告
 
-The Markdown report contains run metadata, summary counts, budget usage, degradation notes, and findings grouped by confidence. High-confidence findings cite a deterministic rule or test evidence and are labeled directly actionable. Advisory findings are labeled for human review. Every finding links to exactly one trace ID, and the trace section lists tool, prompt, response, and input hash.
+Markdown 报告包含 run 元数据、汇总数量、预算使用情况、降级说明，并按置信度分组展示 finding。高置信度 finding 必须引用确定性规则或测试证据，并标记为“可直接采纳”；建议型 finding 标记为“仅供参考”。每条 finding 只关联一个 trace ID，trace 区域列出工具、prompt、模型回复和输入哈希。
 
-## Testing
+## 测试
 
-Unit and integration tests cover checkpoint resume after interruption, budget fallback/truncation/no-LLM behavior, secret redaction, declarative tool registration, trace completeness, confidence rendering, OneAPI response parsing, and an offline end-to-end CLI run using a fixture diff. Tests never execute code from the fixture repository and never require network access.
+单元测试和集成测试覆盖：中断后的 checkpoint 恢复、预算 fallback/截断/禁用 LLM、secret 脱敏、声明式工具注册、trace 完整性、置信度渲染、OneAPI 响应解析，以及使用 fixture diff 的离线端到端 CLI 运行。测试不会执行 fixture 仓库中的代码，也不依赖网络。
 
-## Non-goals for v1
+## v1 不包含
 
-- Posting comments or review states back to GitHub/GitLab.
-- Executing arbitrary repository tests, builds, or shell commands.
-- Multi-user server deployment or a distributed task queue.
+- 向 GitHub/GitLab 发布评论或 review 状态。
+- 执行任意仓库测试、构建或 shell 命令。
+- 多用户服务部署或分布式任务队列。
