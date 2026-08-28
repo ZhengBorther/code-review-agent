@@ -67,3 +67,15 @@ def test_deleted_files_are_skipped_and_sections_are_stably_sorted():
     assert grouped[0].language == "go"
     assert grouped[0].files == ("a.go", "z.go")
     assert len(grouped) == 1
+
+
+def test_unknown_extensions_remain_observable_in_unknown_group():
+    diff = (
+        "diff --git a/Makefile b/Makefile\n"
+        "--- a/Makefile\n+++ b/Makefile\n+all:\n+\techo ok\n"
+    )
+    grouped = split_diff_by_language(diff)
+    assert len(grouped) == 1
+    assert grouped[0].language == "unknown"
+    assert grouped[0].files == ("Makefile",)
+    assert "echo ok" in grouped[0].diff

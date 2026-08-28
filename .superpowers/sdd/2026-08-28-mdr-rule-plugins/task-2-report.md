@@ -20,4 +20,4 @@ Completed.
 
 ## Concerns
 
-- Files with extensions outside the supported mapping are omitted from language groups until a mapping is added.
+- Files with extensions outside the supported mapping are returned in an `unknown` group so callers can surface or explicitly handle them.

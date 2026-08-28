@@ -44,7 +44,7 @@ def _language(path: str) -> str | None:
 
 
 def split_diff_by_language(diff: str) -> tuple[LanguageDiff, ...]:
-    """Group complete ``diff --git`` sections by recognized source language."""
+    """Group complete diff sections, retaining unsupported files as ``unknown``."""
     starts = [match.start() for match in _SECTION.finditer(diff)]
     sections = [diff[start:end] for start, end in zip(starts, starts[1:] + [len(diff)])]
     grouped: dict[str, list[tuple[str, str]]] = {}
@@ -53,6 +53,10 @@ def split_diff_by_language(diff: str) -> tuple[LanguageDiff, ...]:
         language = _language(path) if path else None
         if language is not None:
             grouped.setdefault(language, []).append((path, section))
+        elif path is not None:
+            # Unknown files must remain visible to callers for diagnostics and
+            # policy decisions instead of disappearing from the review input.
+            grouped.setdefault("unknown", []).append((path, section))
     result = []
     for language in sorted(grouped):
         entries = sorted(grouped[language], key=lambda item: (item[0], item[1]))
