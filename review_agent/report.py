@@ -38,9 +38,16 @@ def render_markdown(result: ReviewResult) -> str:
         lines.append("暂无。\n")
     lines.extend(["## Trace 附录", ""])
     for trace in result.traces:
+        trace_kind = _safe(str(trace.get('kind', '')))
+        trace_details = ""
+        if trace.get("kind") == "mdr_batch":
+            metadata = trace.get("metadata") or {}
+            rule_ids = metadata.get("rule_ids") or []
+            trace_details = f"; 规则: {_safe(', '.join(str(item) for item in rule_ids) or '-')}" \
+                f"; ruleset_hash: `{_safe(str(trace.get('ruleset_hash', '') or '-'))}`"
         lines.extend([
             f"### `{_safe(str(trace.get('trace_id', '')))}`",
-            f"- 类型: {_safe(str(trace.get('kind', '')))}; 工具: {_safe(str(trace.get('tool_name', '') or '-'))}; 模型: {_safe(str(trace.get('model', '') or '-'))}",
+            f"- 类型: {trace_kind}{trace_details}; 工具: {_safe(str(trace.get('tool_name', '') or '-'))}; 模型: {_safe(str(trace.get('model', '') or '-'))}",
             f"- 输入哈希: `{_safe(str(trace.get('input_hash', '')))}`; 成本: ${float(trace.get('cost_usd', 0.0)):.6f}; Prompt tokens: {trace.get('prompt_tokens', 0)}; Completion tokens: {trace.get('completion_tokens', 0)}; 耗时: {trace.get('duration_ms', 0)}ms; 错误: {_safe(str(trace.get('error', '') or '-'))}",
             "- Prompt:",
             "```text",
@@ -67,6 +74,7 @@ def _finding_lines(finding) -> list[str]:
         "",
         _safe(finding.body),
         "",
+        f"规则: {_safe(finding.rule_id) or '-'}; 严重度: {_safe(finding.severity) or '-'}; 置信度: {_safe(finding.confidence)}",
         f"证据: {_safe(finding.evidence) or '未提供'}; trace: `{finding.trace_id}`",
         "",
     ]

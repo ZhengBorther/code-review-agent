@@ -108,6 +108,30 @@ class StateStore:
             return None
         return {"payload": json.loads(row["payload_json"]), "status": row["status"]}
 
+    def list_checkpoints(self, run_id: str, prefix: str = "") -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT stage, payload_json, status FROM checkpoints WHERE run_id = ? AND stage LIKE ? ORDER BY stage",
+                (run_id, f"{prefix}%"),
+            ).fetchall()
+        return [{"stage": row["stage"], "payload": json.loads(row["payload_json"]), "status": row["status"]} for row in rows]
+
+    def list_inflight_reservations(self, run_id: str) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT token, reserved_usd, created_at, updated_at FROM reservations WHERE run_id = ? AND status = 'in_flight'",
+                (run_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_reservation(self, run_id: str, token: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT token, reserved_usd, status, actual_usd, created_at, updated_at FROM reservations WHERE run_id = ? AND token = ?",
+                (run_id, token),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
     def save_checkpoint(
         self, run_id: str, stage: str, payload: dict[str, Any], *, status: str = "success"
     ) -> None:
