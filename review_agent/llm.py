@@ -78,4 +78,6 @@ class DeterministicClient:
         if max_chars is not None:
             prompt = prompt[:max_chars]
         # Stable output keeps offline runs reproducible and avoids network use.
+        if "MDR_RULE_BATCH" in prompt:
+            return LLMResponse(text='{"findings": []}', model=model)
         return LLMResponse(text=f"Offline review ({model}): {prompt}", model=model)

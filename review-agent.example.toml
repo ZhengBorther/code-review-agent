@@ -1,0 +1,4 @@
+[rules]
+enabled_languages = ["go"]
+directories = []
+disabled_rules = []

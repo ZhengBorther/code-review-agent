@@ -5,6 +5,11 @@ from review_agent.models import ChangeRequest, RunConfig
 from review_agent.storage import StateStore
 
 
+EXAMPLE_CONFIG = Path(__file__).parents[1] / "review-agent.example.toml"
+EXAMPLE_RULES = Path(__file__).parents[1] / "examples" / "rules"
+GO_MANY_PARAMETERS_DIFF = Path(__file__).parent / "fixtures" / "go-many-parameters.diff"
+
+
 GO_DIFF = """diff --git a/internal/user.go b/internal/user.go
 --- a/internal/user.go
 +++ b/internal/user.go
@@ -132,3 +137,18 @@ def test_cli_run_id_local_without_fetch_requires_original_diff(tmp_path, capsys)
     assert main(["review", "--run-id", run_id, "--offline",
                  "--state-dir", str(state_dir), "--output", str(tmp_path / "report.md")]) == 1
     assert "原始 diff" in capsys.readouterr().err
+
+
+def test_offline_cli_loads_example_rule_and_emits_batch_trace(tmp_path):
+    output = tmp_path / "review.md"
+    rc = main([
+        "review", "--diff-file", str(GO_MANY_PARAMETERS_DIFF),
+        "--config", str(EXAMPLE_CONFIG), "--rules-dir", str(EXAMPLE_RULES),
+        "--output", str(output), "--state-dir", str(tmp_path / "state"),
+        "--offline",
+    ])
+    report = output.read_text(encoding="utf-8")
+    assert rc == 0
+    assert "GO-STYLE-001" in report
+    assert "mdr_batch" in report
+    assert "trace-" in report

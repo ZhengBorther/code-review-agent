@@ -1,0 +1,9 @@
+diff --git a/internal/user.go b/internal/user.go
+--- a/internal/user.go
++++ b/internal/user.go
+@@ -1,1 +1,5 @@
++package user
++
++func CreateUser(ctx context.Context, name string, age int, role string, active bool, region string) error {
++    return nil
++}
