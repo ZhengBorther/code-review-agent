@@ -10,11 +10,33 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from .adapters import GitHubAdapter, GitLabAdapter, LocalDiffAdapter
+from .config import RulesConfig, load_rules_config
 from .llm import DeterministicClient, OpenAICompatibleClient
 from .models import RunConfig
 from .pipeline import ReviewPipeline
+from .rules import MdrRuleLoader, RuleRegistry
 from .storage import StateStore
 from .tools import ToolRegistry
+
+
+def _load_rule_registry(config_path: Path | None, rule_dirs: list[Path] | None) -> RuleRegistry:
+    """Load explicitly authorized MDR directories into one registry."""
+    configured = load_rules_config(config_path, rule_dirs)
+    directories = list(configured.directories)
+    default_dir = Path("~/.config/code-review-agent/rules.d").expanduser()
+    if default_dir.is_dir():
+        directories.insert(0, default_dir.resolve())
+    effective = RulesConfig(
+        directories=tuple(dict.fromkeys(directories)),
+        enabled_languages=configured.enabled_languages,
+        disabled_rules=configured.disabled_rules,
+    )
+    registry = RuleRegistry(effective)
+    loader = MdrRuleLoader()
+    for directory in effective.directories:
+        for rule in loader.load(directory):
+            registry.register(rule)
+    return registry
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -26,6 +48,8 @@ def _parser() -> argparse.ArgumentParser:
     review.add_argument("--diff-file", type=Path, help="path to an explicit unified diff file")
     review.add_argument("--output", type=Path, default=Path("review.md"), help="Markdown report path")
     review.add_argument("--state-dir", type=Path, default=Path(".review-state"), help="directory for SQLite checkpoints/traces")
+    review.add_argument("--config", type=Path, help="TOML configuration file")
+    review.add_argument("--rules-dir", type=Path, action="append", default=[], help="authorized MDR rule directory; repeatable")
     review.add_argument("--budget-usd", type=float, default=1.0, help="maximum LLM spend in USD")
     review.add_argument("--model", default=os.getenv("ONEAPI_MODEL", "large"), help="primary model name")
     review.add_argument("--fallback-model", default=os.getenv("ONEAPI_FALLBACK_MODEL", "small"), help="fallback model name")
@@ -83,7 +107,8 @@ def _run_review(args: argparse.Namespace) -> int:
         run_target = existing["run_id"] if existing else url
     if not run_target:
         run_target = url
-    result = ReviewPipeline(store, adapter, ToolRegistry.with_builtins(), client, config).run(run_target)
+    rules = _load_rule_registry(args.config, args.rules_dir)
+    result = ReviewPipeline(store, adapter, ToolRegistry.with_builtins(), client, config, rules=rules).run(run_target)
     args.output.write_text(result.markdown, encoding="utf-8")
     return 0
 

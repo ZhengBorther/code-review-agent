@@ -1,0 +1,92 @@
+from pathlib import Path
+
+from review_agent.cli import main
+
+
+GO_DIFF = """diff --git a/internal/user.go b/internal/user.go
+--- a/internal/user.go
++++ b/internal/user.go
+@@ -1,1 +1,2 @@
++func CreateUser(name string, age int, role string, active bool, region string) {}
+"""
+
+RULE = """---
+id: {rule_id}
+title: {title}
+language: {language}
+domains: [STYLE]
+severity: warning
+prompt_hint: Check changed code.
+deprecated: false
+---
+# {rule_id}
+"""
+
+
+def _write_go_diff(path: Path) -> None:
+    path.write_text(GO_DIFF, encoding="utf-8")
+
+
+def _write_rule(directory: Path, rule_id: str, language: str = "go") -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / f"{rule_id}.mdr").write_text(
+        RULE.format(rule_id=rule_id, title=rule_id, language=language),
+        encoding="utf-8",
+    )
+
+
+def test_cli_loads_toml_and_repeated_rule_directories(tmp_path):
+    diff_file = tmp_path / "change.diff"
+    _write_go_diff(diff_file)
+    config_rules = tmp_path / "config-rules"
+    extra_a = tmp_path / "extra-a"
+    extra_b = tmp_path / "extra-b"
+    _write_rule(config_rules, "GO-STYLE-001")
+    _write_rule(extra_a, "COMMON-SECURITY-001", "common")
+    _write_rule(extra_b, "GO-STYLE-002")
+    config_file = tmp_path / "review-agent.toml"
+    config_file.write_text(
+        '[rules]\ndirectories = ["config-rules"]\n', encoding="utf-8"
+    )
+    output = tmp_path / "report.md"
+    rc = main([
+        "review", "--diff-file", str(diff_file), "--offline",
+        "--config", str(config_file), "--rules-dir", str(extra_a),
+        "--rules-dir", str(extra_b), "--state-dir", str(tmp_path / "state"),
+        "--output", str(output),
+    ])
+    assert rc == 0
+    report = output.read_text(encoding="utf-8")
+    assert "GO-STYLE-001" in report
+    assert "COMMON-SECURITY-001" in report
+    assert "GO-STYLE-002" in report
+
+
+def test_cli_loads_existing_default_user_rule_directory(tmp_path, monkeypatch):
+    diff_file = tmp_path / "change.diff"
+    _write_go_diff(diff_file)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    default_rules = tmp_path / "home" / ".config" / "code-review-agent" / "rules.d"
+    _write_rule(default_rules, "GO-DEFAULT-001")
+    output = tmp_path / "report.md"
+    assert main([
+        "review", "--diff-file", str(diff_file), "--offline",
+        "--state-dir", str(tmp_path / "state"), "--output", str(output),
+    ]) == 0
+    assert "GO-DEFAULT-001" in output.read_text(encoding="utf-8")
+
+
+def test_cli_reports_rule_file_and_reason_for_invalid_mdr(tmp_path, capsys):
+    diff_file = tmp_path / "change.diff"
+    _write_go_diff(diff_file)
+    bad = tmp_path / "bad.mdr"
+    bad.write_text("---\nid: invalid id\n---\n", encoding="utf-8")
+    rc = main([
+        "review", "--diff-file", str(diff_file), "--offline",
+        "--rules-dir", str(tmp_path), "--state-dir", str(tmp_path / "state"),
+        "--output", str(tmp_path / "report.md"),
+    ])
+    assert rc == 1
+    error = capsys.readouterr().err
+    assert "bad.mdr" in error
+    assert "invalid rule id" in error
