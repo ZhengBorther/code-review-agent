@@ -49,6 +49,12 @@ class MdrRuleLoader:
         result = []
         seen: set[str] = set()
         for path in sorted(root.rglob("*.mdr")):
+            if path.is_symlink():
+                raise RuleLoadError(f"symlink rule file is not allowed: {path.name}")
+            try:
+                path.resolve().relative_to(root)
+            except ValueError as exc:
+                raise RuleLoadError(f"rule file escapes authorized directory: {path.name}") from exc
             try:
                 size = path.stat().st_size
                 if size > self.max_file_bytes:
@@ -65,13 +71,15 @@ class MdrRuleLoader:
         return result
 
     def _parse(self, text: str, source: str) -> ReviewRule:
-        if not text.startswith("---"):
+        lines = text.splitlines(keepends=True)
+        if not lines or lines[0].rstrip("\r\n") != "---":
             raise RuleLoadError(f"invalid YAML front matter in {source}")
-        parts = text.split("---", 2)
-        if len(parts) < 3:
+        end = next((index for index, line in enumerate(lines[1:], 1)
+                    if line.rstrip("\r\n") == "---"), None)
+        if end is None:
             raise RuleLoadError(f"invalid YAML front matter in {source}")
         try:
-            metadata = yaml.safe_load(parts[1])
+            metadata = yaml.safe_load("".join(lines[1:end]))
         except Exception as exc:
             raise RuleLoadError(f"invalid YAML in {source}") from exc
         if not isinstance(metadata, dict):
@@ -97,4 +105,4 @@ class MdrRuleLoader:
         if not isinstance(deprecated, bool):
             raise RuleLoadError(f"invalid deprecated in {source}")
         return ReviewRule(rid, title, language.lower(), tuple(item.upper() for item in domains),
-                          severity, hint, deprecated, parts[2].lstrip("\r\n"), source)
+                          severity, hint, deprecated, "".join(lines[end + 1:]).lstrip("\r\n"), source)

@@ -46,3 +46,24 @@ def test_rejects_wrong_field_types(tmp_path):
     (tmp_path / "wrong.mdr").write_text(content, encoding="utf-8")
     with pytest.raises(RuleLoadError, match="invalid domains"):
         MdrRuleLoader().load(tmp_path)
+
+def test_front_matter_fence_is_line_based_and_body_may_contain_separator(tmp_path):
+    content = VALID_GO_RULE.replace(
+        "  检查新增/修改的函数签名：当参数数量大于4个时必须封装。",
+        "  检查新增/修改的函数签名。\n  示例分隔符：---\n  仍属于提示内容。",
+    )
+    content += "\n正文中的分隔符 --- 不应截断正文。\n"
+    path = tmp_path / "rule.mdr"
+    path.write_text(content, encoding="utf-8")
+    rule = MdrRuleLoader().load(tmp_path)[0]
+    assert "示例分隔符：---" in rule.prompt_hint
+    assert "正文中的分隔符 ---" in rule.body
+
+def test_rejects_symlink_rule_file(tmp_path):
+    outside = tmp_path / "outside.mdr"
+    outside.write_text(VALID_GO_RULE, encoding="utf-8")
+    rules = tmp_path / "rules"
+    rules.mkdir()
+    (rules / "linked.mdr").symlink_to(outside)
+    with pytest.raises(RuleLoadError, match="symlink"):
+        MdrRuleLoader().load(rules)

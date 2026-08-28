@@ -45,4 +45,6 @@ def load_rules_config(path: str | Path | None = None,
         disabled = tuple(raw_disabled)
     for item in cli_directories or []:
         directories.append(Path(item).resolve())
+    # Preserve declaration order while preventing duplicate directory scans.
+    directories = list(dict.fromkeys(directories))
     return RulesConfig(tuple(directories), enabled, disabled)

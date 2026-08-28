@@ -20,6 +20,12 @@ Completed.
 - `pytest -q`: 51 passed
 - `git diff --check`: passed
 
+## Reviewer Follow-up
+
+- Front matter fences are now recognized only as exact standalone lines at the file start and closing boundary; separators in YAML block scalars or rule bodies are preserved.
+- Symlinked MDR files are rejected, and every resolved file path is checked to remain beneath the explicitly authorized root.
+- Configured rule directories are de-duplicated while preserving declaration order.
+
 ## Concerns
 
 - The environment contains an older PyYAML release that references removed Python 3.13 `collections` aliases; the loader includes a compatibility shim. Installing the declared `PyYAML>=6,<7` dependency avoids relying on that legacy behavior.
