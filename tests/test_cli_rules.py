@@ -1,6 +1,8 @@
 from pathlib import Path
 
 from review_agent.cli import main
+from review_agent.models import ChangeRequest, RunConfig
+from review_agent.storage import StateStore
 
 
 GO_DIFF = """diff --git a/internal/user.go b/internal/user.go
@@ -90,3 +92,43 @@ def test_cli_reports_rule_file_and_reason_for_invalid_mdr(tmp_path, capsys):
     error = capsys.readouterr().err
     assert "bad.mdr" in error
     assert "invalid rule id" in error
+
+
+def test_cli_run_id_uses_persisted_remote_url_and_reuses_fetch(tmp_path, monkeypatch):
+    state_dir = tmp_path / "state"
+    store = StateStore(state_dir / "state.db")
+    run_id = store.create_run(RunConfig(
+        url="https://github.com/acme/project/pull/7", budget_usd=1.0,
+        offline=True, state_dir=str(state_dir),
+    ))
+    request = ChangeRequest(
+        url="https://github.com/acme/project/pull/7", title="cached",
+        diff=GO_DIFF, source="github",
+    )
+    store.save_checkpoint(run_id, "fetch", {"request": request.to_dict(), "diff_hash": "cached"})
+    selected = {}
+
+    class StubGitHubAdapter:
+        def __init__(self, token=None):
+            selected["adapter"] = "github"
+
+        def fetch(self, url):
+            raise AssertionError("cached fetch checkpoint should be reused")
+
+    monkeypatch.setattr("review_agent.cli.GitHubAdapter", StubGitHubAdapter)
+    output = tmp_path / "report.md"
+    assert main(["review", "--run-id", run_id, "--offline",
+                 "--state-dir", str(state_dir), "--output", str(output)]) == 0
+    assert selected["adapter"] == "github"
+
+
+def test_cli_run_id_local_without_fetch_requires_original_diff(tmp_path, capsys):
+    state_dir = tmp_path / "state"
+    store = StateStore(state_dir / "state.db")
+    run_id = store.create_run(RunConfig(
+        url="local:///tmp/original.diff", budget_usd=1.0,
+        offline=True, state_dir=str(state_dir),
+    ))
+    assert main(["review", "--run-id", run_id, "--offline",
+                 "--state-dir", str(state_dir), "--output", str(tmp_path / "report.md")]) == 1
+    assert "原始 diff" in capsys.readouterr().err

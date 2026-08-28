@@ -63,16 +63,31 @@ def _run_review(args: argparse.Namespace) -> int:
     url = args.url or ""
     if args.run_id is None and args.diff_file is None and not args.url:
         raise ValueError("provide a PR/MR URL or --diff-file")
-    if args.diff_file is not None:
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.state_dir.mkdir(parents=True, exist_ok=True)
+    store = StateStore(args.state_dir / "state.db")
+    if args.run_id is not None:
+        persisted = store.get_run(args.run_id)
+        url = persisted["config"].get("url") or persisted["url"]
+        if url.startswith("local://"):
+            if store.get_checkpoint(args.run_id, "fetch") is None and args.diff_file is None:
+                raise ValueError("无法恢复 fetch：需要原始 diff 文件（请提供 --diff-file）")
+            adapter = LocalDiffAdapter(args.diff_file or Path("__unused_diff_for_resume__"))
+        else:
+            host = (urlparse(url).hostname or "").lower()
+            if host == "github.com" or host.endswith(".github.com"):
+                adapter = GitHubAdapter(token=os.getenv("GITHUB_TOKEN"))
+            elif host == "gitlab.com" or host.endswith(".gitlab.com"):
+                adapter = GitLabAdapter(token=os.getenv("GITLAB_TOKEN"))
+            else:
+                raise ValueError("unsupported persisted change-request URL; expected GitHub or GitLab PR/MR")
+    elif args.diff_file is not None:
         resolved = args.diff_file.resolve()
         digest = hashlib.sha256(resolved.read_bytes()).hexdigest() if resolved.is_file() else "missing"
         # Include path and content identity so different local inputs never
         # silently reuse a prior run's checkpoints.
         url = args.url or f"local://{resolved}#sha256={digest}"
         adapter = LocalDiffAdapter(args.diff_file)
-    elif args.run_id is not None:
-        url = args.url or "local://diff"
-        adapter = LocalDiffAdapter(Path("__unused_diff_for_resume__"))
     else:
         host = (urlparse(args.url).hostname or "").lower()
         if host == "github.com" or host.endswith(".github.com"):
@@ -89,8 +104,6 @@ def _run_review(args: argparse.Namespace) -> int:
             raise ValueError("OneAPI requires --oneapi-base-url and --oneapi-api-key (or ONEAPI_BASE_URL/ONEAPI_API_KEY)")
         client = OpenAICompatibleClient(args.oneapi_base_url, args.oneapi_api_key)
 
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.state_dir.mkdir(parents=True, exist_ok=True)
     config = RunConfig(
         url=url,
         budget_usd=args.budget_usd,
@@ -100,7 +113,6 @@ def _run_review(args: argparse.Namespace) -> int:
         output_path=str(args.output),
         state_dir=str(args.state_dir),
     )
-    store = StateStore(args.state_dir / "state.db")
     run_target = args.run_id
     if not run_target and url.startswith("local://"):
         existing = store.find_latest_run(url)

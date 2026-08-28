@@ -8,15 +8,17 @@
 - 所有目录中的 `.mdr` 文件通过安全 loader 解析并注册到一个 `RuleRegistry`，随后传入 `ReviewPipeline`。
 - 保留无规则调用兼容性：空 registry 不触发 MDR 批次，原有普通 review 流程不变。
 - 配置、规则目录或 MDR 文件错误沿用 CLI 错误出口，报告文件路径和具体原因后返回 1。
+- `--run-id` 恢复时先读取 SQLite 中持久化的 `config.url`，再选择对应的 Local/GitHub/GitLab adapter；已有 fetch checkpoint 时可直接复用。
+- 本地恢复若缺少 fetch checkpoint 且未提供 `--diff-file`，会明确提示需要原始 diff，避免尝试读取虚构路径。
 
 ## 验证
 
 ```text
 pytest -q tests/test_cli_rules.py tests/test_cli_e2e.py
-8 passed
+10 passed
 
 pytest -q
-79 passed
+82 passed
 
 git diff --check
 passed
