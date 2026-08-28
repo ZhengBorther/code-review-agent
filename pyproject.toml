@@ -7,7 +7,7 @@ name = "code-review-agent"
 version = "0.1.0"
 description = "A checkpointed, secret-safe local code review agent"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = ["PyYAML>=6,<7"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
