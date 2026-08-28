@@ -43,6 +43,8 @@ class Finding(_Serializable):
     file_path: str | None = None
     line_start: int | None = None
     line_end: int | None = None
+    severity: str = ""
+    rule_id: str = ""
 
     def __post_init__(self) -> None:
         if self.confidence not in ("high", "advisory"):
@@ -64,6 +66,10 @@ class TraceRecord(_Serializable):
     duration_ms: int = 0
     tool_name: str = ""
     error: str = ""
+    parent_trace_id: str = ""
+    rule_id: str = ""
+    ruleset_hash: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
