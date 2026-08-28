@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 import collections
+import hashlib
+import json
 from collections import abc
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,6 +33,46 @@ class ReviewRule:
     deprecated: bool
     body: str
     source: str
+
+
+class RuleRegistry:
+    """Registry for data-only MDR rules and their effective configuration."""
+
+    def __init__(self, config: Any):
+        self.config = config
+        self._rules: dict[str, ReviewRule] = {}
+
+    def register(self, rule: ReviewRule) -> None:
+        if rule.id in self._rules:
+            raise RuleLoadError(f"duplicate rule id: {rule.id}")
+        self._rules[rule.id] = rule
+
+    def applicable(self, language: str) -> tuple[ReviewRule, ...]:
+        target = language.lower()
+        enabled = {item.lower() for item in getattr(self.config, "enabled_languages", ())}
+        if enabled and target not in enabled:
+            return ()
+        disabled = set(getattr(self.config, "disabled_rules", ()))
+        rules = (rule for rule in self._rules.values()
+                 if rule.language in (target, "common")
+                 and rule.id not in disabled and not rule.deprecated)
+        return tuple(sorted(rules, key=lambda rule: rule.id))
+
+    def ruleset_hash(self, language: str) -> str:
+        effective = [
+            {"id": rule.id, "title": rule.title, "language": rule.language,
+             "domains": list(rule.domains), "severity": rule.severity,
+             "prompt_hint": rule.prompt_hint, "deprecated": rule.deprecated,
+             "body": rule.body, "source": rule.source}
+            for rule in self.applicable(language)
+        ]
+        payload = {"language": language.lower(), "rules": effective,
+                   "enabled_languages": sorted(
+                       item.lower() for item in getattr(self.config, "enabled_languages", ())),
+                   "disabled_rules": sorted(getattr(self.config, "disabled_rules", ()))}
+        canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True,
+                               separators=(",", ":")).encode("utf-8")
+        return hashlib.sha256(canonical).hexdigest()
 
 
 _ID_RE = re.compile(r"^[A-Z][A-Z0-9_-]+$")
