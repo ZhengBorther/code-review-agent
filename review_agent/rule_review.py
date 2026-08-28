@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -86,7 +87,7 @@ def _fit_batch(batch: RuleBatch, limit: int) -> RuleBatch:
             best, lo = candidate.diff, mid + 1
         else:
             hi = mid - 1
-    fitted = replace(batch, diff=best)
+    fitted = replace(batch, diff=best, diff_hash=hashlib.sha256(best.encode("utf-8")).hexdigest())
     if len(build_rule_prompt(fitted)) <= limit:
         return fitted
     # If rule metadata itself is too large, shorten prose fields while
@@ -183,11 +184,13 @@ def parse_rule_response(text: str, batch: RuleBatch) -> RuleParseResult:
             if file_path not in files:
                 raise ValueError(f"file_path is not in batch: {file_path}")
             line_start = item.get("line_start")
-            if isinstance(line_start, bool) or not isinstance(line_start, int) or line_start <= 0:
+            if line_start is not None and (isinstance(line_start, bool) or not isinstance(line_start, int) or line_start <= 0):
                 raise ValueError("line_start must be a positive integer")
             line_end = item.get("line_end")
             if line_end is not None and (isinstance(line_end, bool) or not isinstance(line_end, int) or line_end <= 0):
                 raise ValueError("line_end must be a positive integer")
+            if line_start is None and line_end is not None:
+                raise ValueError("line_end requires line_start")
             if line_end is not None and line_end < line_start:
                 raise ValueError("line_end must not precede line_start")
             title = _bounded_string(item.get("title"), "title")

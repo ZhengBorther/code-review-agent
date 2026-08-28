@@ -84,3 +84,20 @@ def test_parser_rejects_unbounded_findings_and_reversed_location():
         "line_start": 4, "line_end": 2, "title": "x", "body": "x", "evidence": "x"}]}
     parsed = parse_rule_response(json.dumps(reversed_lines), batch)
     assert parsed.findings == () and parsed.rejections
+
+
+def test_parser_accepts_file_level_finding_without_line_start():
+    batch = build_rule_batches(LanguageDiff("go", ("a.go",), GO_DIFF, "h"), (make_rule(),), 20_000)[0]
+    parsed = parse_rule_response(json.dumps({"findings": [{
+        "rule_id": "GO-STYLE-001", "file_path": "a.go", "line_start": None,
+        "line_end": None, "title": "file issue", "body": "review file", "evidence": "file evidence"
+    }]}), batch)
+    assert len(parsed.findings) == 1
+    assert parsed.findings[0].line_start is None
+
+
+def test_truncated_batch_hash_matches_actual_diff():
+    language_diff = LanguageDiff("go", ("a.go",), GO_DIFF, "original-hash")
+    batch = build_rule_batches(language_diff, (make_rule(),), 300)[0]
+    import hashlib
+    assert batch.diff_hash == hashlib.sha256(batch.diff.encode()).hexdigest()

@@ -148,6 +148,13 @@ class StateStore:
                 (run_id, stage, payload_json, status, now, now),
             )
 
+    def mark_checkpoint(self, run_id: str, stage: str, status: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE checkpoints SET status = ?, updated_at = ? WHERE run_id = ? AND stage = ?",
+                (status, _utc_now(), run_id, stage),
+            )
+
     def save_trace(self, trace: TraceRecord) -> None:
         now = _utc_now()
         with self._connect() as connection:

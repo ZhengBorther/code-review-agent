@@ -31,6 +31,20 @@ def test_registry_rejects_duplicate_ids():
         registry.register(make_rule("GO-STYLE-001", "python"))
 
 
+def test_duplicate_rule_error_includes_both_sources():
+    registry = RuleRegistry(RulesConfig())
+    first = make_rule("GO-STYLE-001")
+    second = make_rule("GO-STYLE-001", "python")
+    first = ReviewRule(**{**first.__dict__, "source": "rules/go/GO-STYLE-001.mdr"})
+    second = ReviewRule(**{**second.__dict__, "source": "rules/py/GO-STYLE-001.mdr"})
+    registry.register(first)
+    with pytest.raises(RuleLoadError) as exc:
+        registry.register(second)
+    message = str(exc.value)
+    assert "rules/go/GO-STYLE-001.mdr" in message
+    assert "rules/py/GO-STYLE-001.mdr" in message
+
+
 def test_ruleset_hash_is_stable_and_changes_with_effective_rules():
     first = RuleRegistry(RulesConfig(enabled_languages=("go",)))
     first.register(make_rule("GO-STYLE-002"))

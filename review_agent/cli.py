@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import os
 import sys
+from dataclasses import replace
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -19,7 +20,18 @@ from .storage import StateStore
 from .tools import ToolRegistry
 
 
-def _load_rule_registry(config_path: Path | None, rule_dirs: list[Path] | None) -> RuleRegistry:
+def _gitlab_host_allowed(host: str, cli_hosts: list[str], persisted: dict | None) -> bool:
+    normalized = {item.strip().lower() for item in cli_hosts if item.strip()}
+    env_hosts = {item.strip().lower() for item in os.getenv("GITLAB_ALLOWED_HOSTS", "").split(",") if item.strip()}
+    if persisted:
+        env_hosts.update(item.lower() for item in persisted.get("gitlab_allowed_hosts", []))
+    return host == "gitlab.com" or host.endswith(".gitlab.com") or host in normalized or host in env_hosts
+
+
+def _load_rule_registry(config_path: Path | None, rule_dirs: list[Path] | None, *, snapshot: list[dict] | None = None) -> RuleRegistry:
+    if snapshot is not None:
+        configured = load_rules_config(config_path, rule_dirs)
+        return RuleRegistry.from_snapshot(configured, snapshot)
     """Load explicitly authorized MDR directories into one registry."""
     configured = load_rules_config(config_path, rule_dirs)
     directories = list(configured.directories)
@@ -35,7 +47,7 @@ def _load_rule_registry(config_path: Path | None, rule_dirs: list[Path] | None) 
     loader = MdrRuleLoader()
     for directory in effective.directories:
         for rule in loader.load(directory):
-            registry.register(rule)
+            registry.register(replace(rule, source=str((directory / rule.source).resolve())))
     return registry
 
 
@@ -56,6 +68,7 @@ def _parser() -> argparse.ArgumentParser:
     review.add_argument("--oneapi-base-url", default=os.getenv("ONEAPI_BASE_URL"), help="OpenAI-compatible API base URL")
     review.add_argument("--oneapi-api-key", default=os.getenv("ONEAPI_API_KEY") or os.getenv("OPENAI_API_KEY"), help="OneAPI API key")
     review.add_argument("--offline", action="store_true", help="use deterministic local model; never access network")
+    review.add_argument("--gitlab-host", action="append", default=[], help="explicitly authorize a self-hosted GitLab hostname; repeatable")
     return parser
 
 
@@ -66,8 +79,10 @@ def _run_review(args: argparse.Namespace) -> int:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.state_dir.mkdir(parents=True, exist_ok=True)
     store = StateStore(args.state_dir / "state.db")
+    persisted_config = None
     if args.run_id is not None:
         persisted = store.get_run(args.run_id)
+        persisted_config = persisted["config"]
         url = persisted["config"].get("url") or persisted["url"]
         if url.startswith("local://"):
             if store.get_checkpoint(args.run_id, "fetch") is None and args.diff_file is None:
@@ -77,7 +92,7 @@ def _run_review(args: argparse.Namespace) -> int:
             host = (urlparse(url).hostname or "").lower()
             if host == "github.com" or host.endswith(".github.com"):
                 adapter = GitHubAdapter(token=os.getenv("GITHUB_TOKEN"))
-            elif host == "gitlab.com" or host.endswith(".gitlab.com"):
+            elif _gitlab_host_allowed(host, args.gitlab_host, persisted_config):
                 adapter = GitLabAdapter(token=os.getenv("GITLAB_TOKEN"))
             else:
                 raise ValueError("unsupported persisted change-request URL; expected GitHub or GitLab PR/MR")
@@ -92,7 +107,7 @@ def _run_review(args: argparse.Namespace) -> int:
         host = (urlparse(args.url).hostname or "").lower()
         if host == "github.com" or host.endswith(".github.com"):
             adapter = GitHubAdapter(token=os.getenv("GITHUB_TOKEN"))
-        elif host == "gitlab.com" or host.endswith(".gitlab.com"):
+        elif _gitlab_host_allowed(host, args.gitlab_host, None):
             adapter = GitLabAdapter(token=os.getenv("GITLAB_TOKEN"))
         else:
             raise ValueError("unsupported change-request URL; expected GitHub or GitLab PR/MR")
@@ -104,6 +119,14 @@ def _run_review(args: argparse.Namespace) -> int:
             raise ValueError("OneAPI requires --oneapi-base-url and --oneapi-api-key (or ONEAPI_BASE_URL/ONEAPI_API_KEY)")
         client = OpenAICompatibleClient(args.oneapi_base_url, args.oneapi_api_key)
 
+    if persisted_config is not None and args.config is None and not args.rules_dir:
+        snapshot_config = RulesConfig(
+            enabled_languages=tuple(persisted_config.get("rules_enabled_languages", ())),
+            disabled_rules=tuple(persisted_config.get("rules_disabled", ())),
+        )
+        rules = RuleRegistry.from_snapshot(snapshot_config, persisted_config.get("rules_snapshot", []))
+    else:
+        rules = _load_rule_registry(args.config, args.rules_dir)
     config = RunConfig(
         url=url,
         budget_usd=args.budget_usd,
@@ -112,6 +135,11 @@ def _run_review(args: argparse.Namespace) -> int:
         offline=args.offline,
         output_path=str(args.output),
         state_dir=str(args.state_dir),
+        rules_directories=tuple(str(item) for item in getattr(rules.config, "directories", ())),
+        rules_enabled_languages=tuple(getattr(rules.config, "enabled_languages", ())),
+        rules_disabled=tuple(getattr(rules.config, "disabled_rules", ())),
+        rules_snapshot=rules.snapshot(),
+        gitlab_allowed_hosts=tuple(args.gitlab_host),
     )
     run_target = args.run_id
     if not run_target and url.startswith("local://"):
@@ -119,7 +147,6 @@ def _run_review(args: argparse.Namespace) -> int:
         run_target = existing["run_id"] if existing else url
     if not run_target:
         run_target = url
-    rules = _load_rule_registry(args.config, args.rules_dir)
     result = ReviewPipeline(store, adapter, ToolRegistry.with_builtins(), client, config, rules=rules).run(run_target)
     args.output.write_text(result.markdown, encoding="utf-8")
     return 0

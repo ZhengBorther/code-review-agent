@@ -93,3 +93,22 @@ class RunConfig(_Serializable):
     completion_tokens: int = 512
     output_path: str = "review.md"
     state_dir: str = ".review-state"
+    rules_directories: tuple[str, ...] = ()
+    rules_enabled_languages: tuple[str, ...] = ()
+    rules_disabled: tuple[str, ...] = ()
+    rules_snapshot: list[dict[str, Any]] = field(default_factory=list)
+    gitlab_allowed_hosts: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = super().to_dict()
+        for key in ("rules_directories", "rules_enabled_languages", "rules_disabled", "gitlab_allowed_hosts"):
+            payload[key] = list(payload[key])
+        return payload
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "RunConfig":
+        payload = dict(value)
+        for key in ("rules_directories", "rules_enabled_languages", "rules_disabled", "gitlab_allowed_hosts"):
+            if key in payload:
+                payload[key] = tuple(payload[key])
+        return cls(**{key: val for key, val in payload.items() if key in {field.name for field in fields(cls)}})

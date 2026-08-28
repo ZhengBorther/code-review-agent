@@ -72,7 +72,21 @@ class ReviewPipeline:
         controller.spent_usd = float(self.store.get_run(run_id)["cost_usd"])
         findings: list[Finding] = []
         degradations: list[str] = self._reclaim_orphan_reservations(run_id)
-        for language_diff in split_diff_by_language(sanitized_diff):
+        language_diffs = split_diff_by_language(sanitized_diff)
+        valid_stages: set[str] = set()
+        for language_diff in language_diffs:
+            rules = self.rules.applicable(language_diff.language)
+            if language_diff.language == "unknown" and not rules:
+                continue
+            for index, _batch in enumerate(build_rule_batches(language_diff, rules, max(256, config.max_diff_chars))):
+                valid_stages.add(f"rules:{language_diff.language}:{index}")
+        for checkpoint in self.store.list_checkpoints(run_id, "rules:"):
+            stage = checkpoint["stage"]
+            base = stage[:-len(":reservation")] if stage.endswith(":reservation") else stage
+            if base not in valid_stages:
+                self.store.mark_checkpoint(run_id, stage, "superseded")
+
+        for language_diff in language_diffs:
             rules = self.rules.applicable(language_diff.language)
             if language_diff.language == "unknown" and not rules:
                 self._trace(run_id, kind="mdr_batch", input_hash=language_diff.diff_hash,
@@ -294,9 +308,25 @@ class ReviewPipeline:
 
             findings = tool_findings + mdr_findings + llm_findings
             traces = self.store.get_traces(run_id)
-            result = ReviewResult(run_id=run_id, request=request, findings=findings, traces=traces, cost_usd=float(self.store.get_run(run_id)["cost_usd"]), budget_usd=config.budget_usd, degradations=degradations)
             render = self.store.get_checkpoint(run_id, "render")
-            active_trace_ids = [trace.get("trace_id", "") for trace in traces if trace.get("kind") in ("mdr_batch", "mdr_finding")]
+            active_trace_ids: list[str] = []
+            for checkpoint in self.store.list_checkpoints(run_id, "rules:"):
+                if checkpoint["stage"].endswith(":reservation"):
+                    continue
+                payload = checkpoint["payload"]
+                if self.store.get_checkpoint(run_id, checkpoint["stage"]) is None:
+                    continue
+                if payload.get("batch_trace_id"):
+                    active_trace_ids.append(payload["batch_trace_id"])
+                active_trace_ids.extend(payload.get("finding_trace_ids", []))
+            active_trace_ids = [trace_id for trace_id in active_trace_ids if trace_id]
+            active_set = set(active_trace_ids)
+            traces = [trace for trace in traces
+                      if trace.get("kind") not in ("mdr_batch", "mdr_finding")
+                      or trace.get("trace_id") in active_set
+                      or (trace.get("kind") == "mdr_batch" and
+                          "unknown_language" in (trace.get("metadata") or {}).get("rejections", []))]
+            result = ReviewResult(run_id=run_id, request=request, findings=findings, traces=traces, cost_usd=float(self.store.get_run(run_id)["cost_usd"]), budget_usd=config.budget_usd, degradations=degradations)
             render_input_hash = _hash("|".join(sorted(item.trace_id for item in findings) + sorted(active_trace_ids)))
             if render is None or render.get("input_hash") != render_input_hash:
                 current_stage = "render"
@@ -306,7 +336,6 @@ class ReviewPipeline:
             else:
                 result.markdown = render.get("markdown", "")
             self.store.update_run(run_id, status="completed")
-            result.traces = self.store.get_traces(run_id)
             return result
         except Exception as exc:
             if not failure_recorded:

@@ -225,3 +225,14 @@ def test_pending_reservation_without_db_row_is_retryable(tmp_path):
     resumed = pipeline_with_rules(tmp_path, GO_DIFF, (make_rule(),), client).run(run["run_id"])
     assert client.rule_calls == 1
     assert not resumed.degradations
+
+
+def test_removed_rule_regenerates_report_without_old_rule_trace(tmp_path):
+    payload = {"findings": [{"rule_id": "GO-STYLE-001", "file_path": "internal/user.go", "line_start": 4,
+                              "title": "too many parameters", "body": "use params struct", "evidence": "five"}]}
+    client = JsonRuleClient(payload)
+    first = pipeline_with_rules(tmp_path, GO_DIFF, (make_rule(),), client).run("local://go-remove")
+    assert "GO-STYLE-001" in first.markdown
+    second = pipeline_with_rules(tmp_path, GO_DIFF, (), client).run(first.run_id)
+    assert "GO-STYLE-001" not in second.markdown
+    assert "mdr_finding" not in second.markdown

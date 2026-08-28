@@ -44,8 +44,31 @@ class RuleRegistry:
 
     def register(self, rule: ReviewRule) -> None:
         if rule.id in self._rules:
-            raise RuleLoadError(f"duplicate rule id: {rule.id}")
+            existing = self._rules[rule.id]
+            raise RuleLoadError(
+                f"duplicate rule id: {rule.id} (sources: {existing.source}, {rule.source})"
+            )
         self._rules[rule.id] = rule
+
+    def snapshot(self) -> list[dict[str, Any]]:
+        return [
+            {"id": rule.id, "title": rule.title, "language": rule.language,
+             "domains": list(rule.domains), "severity": rule.severity,
+             "prompt_hint": rule.prompt_hint, "deprecated": rule.deprecated,
+             "body": rule.body, "source": rule.source}
+            for rule in sorted(self._rules.values(), key=lambda item: item.id)
+        ]
+
+    @classmethod
+    def from_snapshot(cls, config: Any, snapshot: list[dict[str, Any]]) -> "RuleRegistry":
+        registry = cls(config)
+        for item in snapshot:
+            registry.register(ReviewRule(
+                id=item["id"], title=item["title"], language=item["language"],
+                domains=tuple(item.get("domains", ())), severity=item["severity"],
+                prompt_hint=item["prompt_hint"], deprecated=bool(item.get("deprecated", False)),
+                body=item.get("body", ""), source=item.get("source", "snapshot")))
+        return registry
 
     def applicable(self, language: str) -> tuple[ReviewRule, ...]:
         target = language.lower()
@@ -89,7 +112,7 @@ class MdrRuleLoader:
         if not root.is_dir():
             raise RuleLoadError(f"rule directory does not exist: {directory}")
         result = []
-        seen: set[str] = set()
+        seen: dict[str, str] = {}
         for path in sorted(root.rglob("*.mdr")):
             if path.is_symlink():
                 raise RuleLoadError(f"symlink rule file is not allowed: {path.name}")
@@ -106,8 +129,8 @@ class MdrRuleLoader:
                 raise RuleLoadError(f"invalid UTF-8 in {path.name}") from exc
             rule = self._parse(text, path.relative_to(root).as_posix())
             if rule.id in seen:
-                raise RuleLoadError(f"duplicate rule id: {rule.id}")
-            seen.add(rule.id)
+                raise RuleLoadError(f"duplicate rule id: {rule.id} (sources: {seen[rule.id]}, {path.relative_to(root).as_posix()})")
+            seen[rule.id] = path.relative_to(root).as_posix()
             if not rule.deprecated:
                 result.append(rule)
         return result
