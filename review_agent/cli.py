@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 
 from .adapters import GitHubAdapter, GitLabAdapter, LocalDiffAdapter
 from .config import RulesConfig, load_app_config, load_rules_config
+from .graph_pipeline import build_review_graph
 from .llm import DeterministicClient, OpenAICompatibleClient
 from .models import RunConfig
 from .pipeline import ReviewPipeline
@@ -193,7 +194,8 @@ def _run_review(args: argparse.Namespace) -> int:
         run_target = existing["run_id"] if existing else url
     if not run_target:
         run_target = url
-    result = ReviewPipeline(store, adapter, ToolRegistry.with_builtins(), client, config, rules=rules).run(run_target)
+    pipeline = ReviewPipeline(store, adapter, ToolRegistry.with_builtins(), client, config, rules=rules)
+    result = build_review_graph(pipeline).run(run_target)
     output.write_text(result.markdown, encoding="utf-8")
     return 0
 
