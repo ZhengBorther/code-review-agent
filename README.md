@@ -90,3 +90,27 @@ python3 -m review_agent review \
 项目提供可选的 LangGraph 编排外壳：安装 `code-review-agent[graph]` 后，CLI 会以固定节点图组织 `fetch`、`sanitize`、`tools`、`load_rules`、`split_languages`、`review_mdr_batches` 和 `render`；未安装时自动使用兼容 fallback。SQLite 仍是 checkpoint、预算 reservation 和 trace 的事实来源。
 
 离线规则评测示例位于 `eval/cases/`，只使用 fixture diff 和注入的模型响应，不访问网络，也不执行规则或仓库代码。
+
+## 仓库 Profile
+
+可使用单独的 TOML profile 按仓库选择规则目录、语言和跳过文件：
+
+```toml
+[[profiles]]
+name = "cr-agent-code"
+repo = "/path/to/repository"
+rules_dirs = ["./examples/rules"]
+enabled_languages = ["go"]
+skip_globs = ["vendor/**", "*.generated.go"]
+```
+
+运行时显式指定 profile 和仓库路径：
+
+```bash
+python3 -m review_agent review \
+  --diff-file change.diff \
+  --profile review-profiles.toml \
+  --repo-path /path/to/repository
+```
+
+Profile 只影响 MDR 规则范围和文件过滤，不包含命令，也不会执行仓库代码。

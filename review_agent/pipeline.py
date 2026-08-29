@@ -75,7 +75,7 @@ class ReviewPipeline:
         controller.spent_usd = float(self.store.get_run(run_id)["cost_usd"])
         findings: list[Finding] = []
         degradations: list[str] = self._reclaim_orphan_reservations(run_id)
-        language_diffs = split_diff_by_language(sanitized_diff)
+        language_diffs = split_diff_by_language(sanitized_diff, config.profile_skip_globs)
         valid_stages: set[str] = set()
         # 先计算本次应存在的阶段，再把已删除的规则或文件标为过期并释放预算。
         for language_diff in language_diffs:
