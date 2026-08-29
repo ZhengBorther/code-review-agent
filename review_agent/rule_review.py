@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 import hashlib
 from dataclasses import dataclass, replace
-from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from .diff_languages import LanguageDiff
 from .models import Finding
@@ -26,6 +27,36 @@ class RuleBatch:
 class RuleParseResult:
     findings: tuple[Finding, ...] = ()
     rejections: tuple[str, ...] = ()
+
+
+class MdrFindingPayload(BaseModel):
+    """模型返回的一条候选评论；这里只校验通用字段约束。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    rule_id: str = Field(min_length=1, max_length=20_000)
+    file_path: str = Field(min_length=1, max_length=20_000)
+    line_start: int | None = Field(default=None, gt=0)
+    line_end: int | None = Field(default=None, gt=0)
+    title: str = Field(min_length=1, max_length=20_000)
+    body: str = Field(min_length=1, max_length=20_000)
+    evidence: str = Field(min_length=1, max_length=20_000)
+    confidence: str | None = None
+
+    @model_validator(mode="after")
+    def validate_line_range(self) -> "MdrFindingPayload":
+        if self.line_start is None and self.line_end is not None:
+            raise ValueError("line_end requires line_start")
+        if self.line_end is not None and self.line_start is not None and self.line_end < self.line_start:
+            raise ValueError("line_end must not precede line_start")
+        return self
+
+
+class MdrResponsePayload(BaseModel):
+    """MDR 批次响应；禁止额外顶层字段并限制评论数量。"""
+
+    model_config = ConfigDict(extra="forbid")
+    findings: list[MdrFindingPayload] = Field(max_length=1_000)
 
 
 def build_rule_batches(
@@ -141,61 +172,30 @@ def build_rule_prompt(batch: RuleBatch) -> str:
     return redact_secrets(raw).text
 
 
-_MAX_FIELD = 20_000
-_MAX_FINDINGS = 1_000
-
-
-def _bounded_string(value: Any, field: str) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"{field} must be a non-empty string")
-    if len(value) > _MAX_FIELD:
-        raise ValueError(f"{field} exceeds maximum length")
-    return value
-
-
 def parse_rule_response(text: str, batch: RuleBatch) -> RuleParseResult:
     """解析严格 JSON 回复，并拒绝不可信的规则或文件引用。"""
     if not isinstance(text, str) or "```" in text:
         return RuleParseResult(rejections=("response must be JSON without Markdown fences",))
     try:
-        payload = json.loads(text)
-    except (TypeError, json.JSONDecodeError):
-        return RuleParseResult(rejections=("response is not valid JSON",))
-    if not isinstance(payload, dict) or set(payload) - {"findings"} or not isinstance(payload.get("findings"), list):
-        return RuleParseResult(rejections=("response must be an object with a findings array",))
-    if len(payload["findings"]) > _MAX_FINDINGS:
-        return RuleParseResult(rejections=(f"findings exceeds maximum of {_MAX_FINDINGS}",))
+        payload = MdrResponsePayload.model_validate_json(text)
+    except ValidationError as exc:
+        return RuleParseResult(rejections=(str(exc),))
     rule_map = {rule.id: rule for rule in batch.rules}
     files = set(batch.files)
     findings: list[Finding] = []
     rejections: list[str] = []
-    for index, item in enumerate(payload["findings"]):
+    for index, item in enumerate(payload.findings):
         try:
-            if not isinstance(item, dict):
-                raise ValueError("finding must be an object")
-            rule_id = _bounded_string(item.get("rule_id"), "rule_id")
-            file_path = _bounded_string(item.get("file_path"), "file_path")
+            rule_id = item.rule_id
+            file_path = item.file_path
             if rule_id not in rule_map:
                 raise ValueError(f"unknown rule_id: {rule_id}")
             if file_path not in files:
                 raise ValueError(f"file_path is not in batch: {file_path}")
-            line_start = item.get("line_start")
-            if line_start is not None and (isinstance(line_start, bool) or not isinstance(line_start, int) or line_start <= 0):
-                raise ValueError("line_start must be a positive integer")
-            line_end = item.get("line_end")
-            if line_end is not None and (isinstance(line_end, bool) or not isinstance(line_end, int) or line_end <= 0):
-                raise ValueError("line_end must be a positive integer")
-            if line_start is None and line_end is not None:
-                raise ValueError("line_end requires line_start")
-            if line_end is not None and line_end < line_start:
-                raise ValueError("line_end must not precede line_start")
-            title = _bounded_string(item.get("title"), "title")
-            body = _bounded_string(item.get("body"), "body")
-            evidence = _bounded_string(item.get("evidence"), "evidence")
             rule = rule_map[rule_id]
-            findings.append(Finding(title=title, body=body, confidence="advisory",
-                                    evidence=evidence, file_path=file_path,
-                                    line_start=line_start, line_end=line_end,
+            findings.append(Finding(title=item.title, body=item.body, confidence="advisory",
+                                    evidence=item.evidence, file_path=file_path,
+                                    line_start=item.line_start, line_end=item.line_end,
                                     severity=rule.severity, rule_id=rule.id))
         except ValueError as exc:
             rejections.append(f"finding[{index}]: {exc}")
