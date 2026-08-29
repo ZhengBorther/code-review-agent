@@ -82,3 +82,11 @@ def test_run_lease_allows_only_one_active_orchestrator(tmp_path):
     assert not store.acquire_run_lease(run_id, "owner-2")
     store.release_run_lease(run_id, "owner-1")
     assert store.acquire_run_lease(run_id, "owner-2")
+
+
+def test_run_lease_heartbeat_keeps_active_owner_exclusive(tmp_path):
+    store = StateStore(tmp_path / "state.db")
+    run_id = store.create_run(RunConfig(url="local://fixture"))
+    assert store.acquire_run_lease(run_id, "owner-1", ttl_seconds=1)
+    assert store.refresh_run_lease(run_id, "owner-1", ttl_seconds=60)
+    assert not store.acquire_run_lease(run_id, "owner-2", ttl_seconds=60)

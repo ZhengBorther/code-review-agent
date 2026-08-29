@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import asyncio
+import threading
 import time
 from dataclasses import dataclass, replace
 from typing import Any
@@ -111,10 +112,13 @@ class ReviewPipeline:
             languages = tuple(item.language for item in language_diffs)
 
             def review_language(language: str) -> tuple[list[Finding], list[str]]:
-                return self._run_mdr_rules(
-                    run_id, request, sanitized_diff, diff_hash, config,
-                    language_filter=language, manage_stale=False,
-                )
+                try:
+                    return self._run_mdr_rules(
+                        run_id, request, sanitized_diff, diff_hash, config,
+                        language_filter=language, manage_stale=False,
+                    )
+                except Exception as exc:
+                    raise RuntimeError(f"language={language}: {exc}") from exc
 
             scheduled = asyncio.run(run_batches_async(
                 languages,
@@ -126,7 +130,8 @@ class ReviewPipeline:
                 degradations.extend(language_degradations)
             for error in scheduled.errors:
                 self._trace(run_id, kind="mdr_batch", error=error,
-                            metadata={"concurrent_batch_failure": True})
+                            metadata={"concurrent_batch_failure": True,
+                                      "batch_identity": error.split(":", 1)[0]})
                 degradations.append("mdr_batch_failed")
             if scheduled.errors:
                 # 成功兄弟 checkpoint 已持久化；让 run 失败，恢复时只重试失败批次。
@@ -273,9 +278,29 @@ class ReviewPipeline:
                     self.store.save_checkpoint(run_id, reservation_key, {**expected, "status": "completed" if accepted else "rejected", "token": reservation.token, "reserved_usd": reservation.reserved_usd, "model": decision.model, "findings": [item.to_dict() for item in batch_findings], "batch_trace_id": batch_trace_id, "finding_trace_ids": finding_trace_ids})
                     self.store.save_checkpoint(run_id, checkpoint_key, {**expected, "findings": [item.to_dict() for item in batch_findings], "batch_trace_id": batch_trace_id, "finding_trace_ids": finding_trace_ids})
                     findings.extend(batch_findings)
-                except Exception:
-                    controller.commit(reservation, 0.0)
-                    self.store.settle_reservation(run_id, reservation.token, 0.0)
+                except Exception as exc:
+                    db_reservation = self.store.get_reservation(run_id, reservation.token)
+                    if db_reservation and db_reservation.get("status") == "completed":
+                        # provider 已完成且成本已结算，仅后续落盘失败；保留 completed
+                        # 让恢复逻辑从 result_json 重建，绝不能重新发请求。
+                        self.store.save_checkpoint(
+                            run_id, reservation_key,
+                            {**expected, "status": "completed", "token": reservation.token,
+                             "reserved_usd": reservation.reserved_usd, "model": decision.model},
+                        )
+                    else:
+                        controller.commit(reservation, 0.0)
+                        self.store.settle_reservation(run_id, reservation.token, 0.0)
+                        # 已明确收到 provider 异常时允许恢复重试；只有进程突然中断
+                        # 留下的 in_flight 状态才按未知结果保守处理。
+                        self.store.save_checkpoint(
+                            run_id,
+                            reservation_key,
+                            {**expected, "status": "failed", "token": reservation.token,
+                             "reserved_usd": reservation.reserved_usd, "model": decision.model,
+                             "error": redact_secrets(str(exc)).text},
+                            status="failed",
+                        )
                     raise
         return findings, degradations
 
@@ -296,8 +321,19 @@ class ReviewPipeline:
             run = self.store.get_run(run_id)
 
         lease_token = str(uuid4())
-        if not self.store.acquire_run_lease(run_id, lease_token):
+        lease_ttl = max(120, int(config.llm_timeout_seconds * 2 + 60))
+        if not self.store.acquire_run_lease(run_id, lease_token, lease_ttl):
             raise RuntimeError(f"run {run_id} is already active")
+        heartbeat_stop = threading.Event()
+
+        def heartbeat() -> None:
+            interval = min(30.0, max(5.0, lease_ttl / 3))
+            while not heartbeat_stop.wait(interval):
+                if not self.store.refresh_run_lease(run_id, lease_token, lease_ttl):
+                    return
+
+        heartbeat_thread = threading.Thread(target=heartbeat, name=f"review-lease-{run_id[:8]}", daemon=True)
+        heartbeat_thread.start()
         current_stage = "fetch"
         failure_recorded = False
         try:
@@ -397,4 +433,6 @@ class ReviewPipeline:
                 self._fail(run_id, current_stage, exc)
             raise
         finally:
+            heartbeat_stop.set()
+            heartbeat_thread.join(timeout=1)
             self.store.release_run_lease(run_id, lease_token)

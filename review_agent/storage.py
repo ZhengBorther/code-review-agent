@@ -130,6 +130,18 @@ class StateStore:
                 (run_id, owner_token),
             )
 
+    def refresh_run_lease(self, run_id: str, owner_token: str, ttl_seconds: int) -> bool:
+        """续期仍由当前 owner 持有的 lease；所有权变化时拒绝续期。"""
+        now = datetime.now(timezone.utc)
+        expires = (now + timedelta(seconds=ttl_seconds)).isoformat()
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "UPDATE run_leases SET expires_at = ?, updated_at = ? "
+                "WHERE run_id = ? AND owner_token = ?",
+                (expires, now.isoformat(), run_id, owner_token),
+            )
+            return cursor.rowcount > 0
+
     def get_checkpoint(self, run_id: str, stage: str) -> dict[str, Any] | None:
         """只返回成功阶段的数据；失败或过期记录仍可被审计查询。"""
         record = self.get_checkpoint_record(run_id, stage)

@@ -144,6 +144,15 @@ def test_concurrent_batch_failure_marks_run_failed_and_keeps_sibling_checkpoint(
     assert pipeline.store.get_checkpoint(run["run_id"], "rules:go:0") is not None
     assert any(trace["kind"] == "mdr_batch" and trace["error"] for trace in pipeline.store.get_traces(run["run_id"]))
 
+    recovery_client = LanguageCountingJsonClient()
+    recovered = pipeline_with_rules(
+        tmp_path, MIXED_DIFF,
+        (make_rule(), make_rule("PY-STYLE-001", "python")), recovery_client,
+    ).run(run["run_id"])
+    assert recovered.run_id == run["run_id"]
+    assert recovery_client.language_calls == {"go": 0, "python": 1}
+    assert pipeline.store.get_run(run["run_id"])["status"] == "completed"
+
 
 def test_pipeline_calls_llm_once_for_multiple_go_rules(tmp_path):
     client = JsonRuleClient({"findings": []})
