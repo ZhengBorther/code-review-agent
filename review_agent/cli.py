@@ -132,6 +132,8 @@ def _run_review(args: argparse.Namespace) -> int:
         client = OpenAICompatibleClient(args.oneapi_base_url, args.oneapi_api_key)
 
     if persisted_config is not None and args.config is None and not args.rules_dir:
+        # A resumed run must use the exact rule snapshot that created its
+        # checkpoints; loading today's directories could silently change them.
         snapshot_config = RulesConfig(
             enabled_languages=tuple(persisted_config.get("rules_enabled_languages", ())),
             disabled_rules=tuple(persisted_config.get("rules_disabled", ())),

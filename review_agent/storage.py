@@ -167,6 +167,8 @@ class StateStore:
         """Mark a checkpoint superseded and release its reservation atomically."""
         now = _utc_now()
         with self._connect() as connection:
+            # BEGIN IMMEDIATE serializes supersede/settle with concurrent
+            # workers so a stale checkpoint cannot release a newly settled run.
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 "SELECT payload_json FROM checkpoints WHERE run_id = ? AND stage = ?",
@@ -245,6 +247,8 @@ class StateStore:
         amount = max(0.0, float(amount_usd))
         now = _utc_now()
         with self._connect() as connection:
+            # Lock the run before summing reservations; otherwise two workers
+            # could both observe the same remaining budget and overspend.
             connection.execute("BEGIN IMMEDIATE")
             run = connection.execute(
                 "SELECT budget_usd, cost_usd FROM runs WHERE run_id = ?", (run_id,)
@@ -268,6 +272,9 @@ class StateStore:
         actual = max(0.0, float(actual_usd))
         now = _utc_now()
         with self._connect() as connection:
+            # Persist provider result and accounting in one transaction so a
+            # crash after settlement can reconstruct findings without retrying
+            # a potentially billable request.
             connection.execute("BEGIN IMMEDIATE")
             reservation = connection.execute(
                 "SELECT reserved_usd, status FROM reservations WHERE token = ? AND run_id = ?",

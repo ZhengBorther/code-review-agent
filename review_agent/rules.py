@@ -113,6 +113,8 @@ class MdrRuleLoader:
             raise RuleLoadError(f"rule directory does not exist: {directory}")
         result = []
         seen: dict[str, str] = {}
+        # Resolve and reject symlinks before reading: an authorized rules
+        # directory must not become a path traversal primitive.
         for path in sorted(root.rglob("*.mdr")):
             if path.is_symlink():
                 raise RuleLoadError(f"symlink rule file is not allowed: {path.name}")
@@ -136,6 +138,8 @@ class MdrRuleLoader:
         return result
 
     def _parse(self, text: str, source: str) -> ReviewRule:
+        # Only a fence on its own line closes front matter; '---' in a YAML
+        # block scalar or Markdown body must remain ordinary rule content.
         lines = text.splitlines(keepends=True)
         if not lines or lines[0].rstrip("\r\n") != "---":
             raise RuleLoadError(f"invalid YAML front matter in {source}")

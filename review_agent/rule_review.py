@@ -52,6 +52,8 @@ def build_rule_batches(
         return ()
     batches: list[RuleBatch] = []
     current: list[ReviewRule] = []
+    # Add rules in ID order and close a batch before it crosses the prompt
+    # limit, making retries and checkpoint keys deterministic.
     for rule in ordered:
         candidate = tuple(current + [rule])
         candidate_batch = RuleBatch(language=language, files=language_diff.files,
@@ -78,6 +80,8 @@ def _fit_batch(batch: RuleBatch, limit: int) -> RuleBatch:
     if len(build_rule_prompt(batch)) <= limit:
         return batch
     # First trim the diff, which is usually the largest component.
+    # Binary search keeps the largest safe prefix while preserving a stable
+    # result for the same input and limit.
     lo, hi = 0, len(batch.diff)
     best = ""
     while lo <= hi:

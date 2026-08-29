@@ -52,6 +52,9 @@ class ReviewPipeline:
         return trace_id
 
     def _reclaim_orphan_reservations(self, run_id: str) -> list[str]:
+        # A reservation without a matching checkpoint cannot be safely
+        # attributed to a live worker, so keep the money reserved and surface
+        # a manual-recovery diagnostic instead of guessing from elapsed time.
         known_tokens = {
             item["payload"].get("token")
             for item in self.store.list_checkpoints(run_id, "rules:")
@@ -74,6 +77,8 @@ class ReviewPipeline:
         degradations: list[str] = self._reclaim_orphan_reservations(run_id)
         language_diffs = split_diff_by_language(sanitized_diff)
         valid_stages: set[str] = set()
+        # Build the expected stage set before executing batches. This lets us
+        # mark removed rules or files as superseded and release their budget.
         for language_diff in language_diffs:
             rules = self.rules.applicable(language_diff.language)
             if language_diff.language == "unknown" and not rules:
@@ -114,6 +119,8 @@ class ReviewPipeline:
 
                 reservation_key = checkpoint_key + ":reservation"
                 reservation_state = self.store.get_checkpoint(run_id, reservation_key)
+                # The reservation checkpoint is the durable hand-off between
+                # budget accounting and the external provider call.
                 if reservation_state and reservation_state.get("status") in ("pending", "in_flight", "completed") and all(reservation_state.get(key) == value for key, value in expected.items()):
                     if reservation_state.get("status") == "completed" and reservation_state.get("findings") is not None:
                         recovered_findings = [Finding.from_dict(item) for item in reservation_state.get("findings", [])]
@@ -126,6 +133,9 @@ class ReviewPipeline:
                     # interrupted. Rebuild findings from the atomically stored
                     # provider response instead of emitting an empty result.
                     if db_reservation and db_reservation.get("status") == "completed":
+                        # The provider result is stored transactionally with
+                        # settlement, so it is the source of truth if the
+                        # process died before trace/checkpoint writes finished.
                         result = db_reservation.get("result") or {}
                         response_text = result.get("response", "")
                         parsed_items = result.get("parsed_findings") or []
@@ -174,6 +184,8 @@ class ReviewPipeline:
                         continue
 
                 prompt = build_rule_prompt(batch)
+                # MDR batches have their own budget decision so organization
+                # rules remain auditable even when generic review is degraded.
                 decision = controller.select(config.model, estimate_tokens(prompt), allow_truncate=True)
                 if decision.reason != "within_budget":
                     degradations.append(decision.reason)
@@ -182,6 +194,8 @@ class ReviewPipeline:
                     self.store.save_checkpoint(run_id, checkpoint_key, {**expected, "findings": [], "batch_trace_id": trace_id, "finding_trace_ids": []})
                     continue
                 reservation = controller.reserve(decision.model, decision.estimated_tokens or estimate_tokens(prompt))
+                # Write pending before the DB reservation: a crash at either
+                # boundary can then be reconciled deterministically on resume.
                 self.store.save_checkpoint(run_id, reservation_key, {**expected, "status": "pending", "token": reservation.token if reservation else "", "reserved_usd": reservation.reserved_usd if reservation else 0.0, "model": decision.model})
                 if reservation is None or not self.store.reserve_budget(run_id, reservation.token, reservation.reserved_usd):
                     if reservation is not None:
@@ -193,6 +207,8 @@ class ReviewPipeline:
                 self.store.save_checkpoint(run_id, reservation_key, {**expected, "status": "in_flight", "token": reservation.token, "reserved_usd": reservation.reserved_usd, "model": decision.model})
                 started = time.monotonic()
                 try:
+                    # Only sanitized, bounded prompt text reaches the model;
+                    # all provider responses are parsed as untrusted JSON.
                     response = self.llm.review(prompt, decision.model, max_chars=decision.max_chars, max_tokens=decision.max_tokens or config.completion_tokens)
                     parsed = parse_rule_response(response.text, batch)
                     accepted = controller.commit(reservation, response.cost_usd)

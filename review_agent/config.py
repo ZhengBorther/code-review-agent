@@ -16,6 +16,8 @@ class RulesConfig:
 
 def load_rules_config(path: str | Path | None = None,
                       cli_directories: list[str | Path] | None = None) -> RulesConfig:
+    # TOML paths are relative to the config file; CLI paths are relative to
+    # the process working directory, matching normal command-line semantics.
     directories: list[Path] = []
     enabled: tuple[str, ...] = ()
     disabled: tuple[str, ...] = ()
