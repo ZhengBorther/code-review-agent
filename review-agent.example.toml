@@ -14,6 +14,8 @@ timeout_seconds = 30
 # api_key = "replace-with-your-oneapi-key"
 
 [llm.pricing]
+# Unit: USD per 1,000 tokens. v1 uses one blended rate for
+# prompt tokens plus completion tokens.
 qwen-plus = 0.003
 qwen-turbo = 0.001
 

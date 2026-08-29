@@ -30,6 +30,8 @@ python3 -m review_agent review \
 
 配置文件可同时管理 `[review]`、`[llm]`、`[llm.pricing]` 和 `[rules]`。命令行参数覆盖 TOML，环境变量覆盖 TOML；预算不足时会依次尝试降级模型、截断上下文，最后只保留规则工具结果。
 
+`[llm.pricing]` 的单位是 **USD / 1,000 tokens**。例如 `qwen-plus = 0.003` 表示每 1,000 tokens 估算成本为 `$0.003`。当前版本使用 prompt tokens 和 completion tokens 的合计数量乘以该单一费率；如果模型供应商区分输入和输出价格，需要先换算成一个 blended rate。
+
 配置优先级为：代码默认值 < TOML 文件 < 环境变量 < CLI 参数。OneAPI、GitHub、GitLab token 都支持放入 TOML，但不写入 SQLite 运行快照、checkpoint 或 trace。包含 token 的配置文件必须限制为当前用户可读：
 
 ```bash
