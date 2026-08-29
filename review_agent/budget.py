@@ -28,7 +28,7 @@ class Reservation:
 class BudgetController:
     def __init__(self, config: RunConfig, pricing: dict[str, float] | None = None):
         self.config = config
-        self.pricing = pricing or MODEL_COST_PER_1K
+        self.pricing = pricing if pricing is not None else (config.model_pricing or MODEL_COST_PER_1K)
         self.spent_usd = 0.0
         self._fallback_used = False
         self.over_budget = False

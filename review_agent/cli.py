@@ -11,7 +11,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from .adapters import GitHubAdapter, GitLabAdapter, LocalDiffAdapter
-from .config import RulesConfig, load_rules_config
+from .config import RulesConfig, load_app_config, load_rules_config
 from .llm import DeterministicClient, OpenAICompatibleClient
 from .models import RunConfig
 from .pipeline import ReviewPipeline
@@ -70,16 +70,16 @@ def _parser() -> argparse.ArgumentParser:
     review.add_argument("url", nargs="?", help="change request URL (use --diff-file for local/offline review)")
     review.add_argument("--run-id", help="resume an existing run by ID")
     review.add_argument("--diff-file", type=Path, help="path to an explicit unified diff file")
-    review.add_argument("--output", type=Path, default=Path("review.md"), help="Markdown report path")
-    review.add_argument("--state-dir", type=Path, default=Path(".review-state"), help="directory for SQLite checkpoints/traces")
+    review.add_argument("--output", type=Path, default=None, help="Markdown report path")
+    review.add_argument("--state-dir", type=Path, default=None, help="directory for SQLite checkpoints/traces")
     review.add_argument("--config", type=Path, help="TOML configuration file")
     review.add_argument("--rules-dir", type=Path, action="append", default=[], help="authorized MDR rule directory; repeatable")
-    review.add_argument("--budget-usd", type=float, default=1.0, help="maximum LLM spend in USD")
-    review.add_argument("--model", default=os.getenv("ONEAPI_MODEL", "large"), help="primary model name")
-    review.add_argument("--fallback-model", default=os.getenv("ONEAPI_FALLBACK_MODEL", "small"), help="fallback model name")
-    review.add_argument("--oneapi-base-url", default=os.getenv("ONEAPI_BASE_URL"), help="OpenAI-compatible API base URL")
-    review.add_argument("--oneapi-api-key", default=os.getenv("ONEAPI_API_KEY") or os.getenv("OPENAI_API_KEY"), help="OneAPI API key")
-    review.add_argument("--offline", action="store_true", help="use deterministic local model; never access network")
+    review.add_argument("--budget-usd", type=float, default=None, help="maximum LLM spend in USD")
+    review.add_argument("--model", default=None, help="primary model name")
+    review.add_argument("--fallback-model", default=None, help="fallback model name")
+    review.add_argument("--oneapi-base-url", default=None, help="OpenAI-compatible API base URL")
+    review.add_argument("--oneapi-api-key", default=None, help="OneAPI API key (prefer ONEAPI_API_KEY)")
+    review.add_argument("--offline", action="store_true", default=None, help="use deterministic local model; never access network")
     review.add_argument("--gitlab-host", action="append", default=[], help="explicitly authorize a self-hosted GitLab hostname; repeatable")
     return parser
 
@@ -88,9 +88,26 @@ def _run_review(args: argparse.Namespace) -> int:
     url = args.url or ""
     if args.run_id is None and args.diff_file is None and not args.url:
         raise ValueError("provide a PR/MR URL or --diff-file")
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.state_dir.mkdir(parents=True, exist_ok=True)
-    store = StateStore(args.state_dir / "state.db")
+    app_config = load_app_config(
+        args.config,
+        args.rules_dir,
+        overrides={
+            "budget_usd": args.budget_usd,
+            "model": args.model,
+            "fallback_model": args.fallback_model,
+            "output_path": str(args.output) if args.output is not None else None,
+            "state_dir": str(args.state_dir) if args.state_dir is not None else None,
+            "llm_base_url": args.oneapi_base_url,
+            "llm_api_key": args.oneapi_api_key,
+            "offline": args.offline,
+            "gitlab_allowed_hosts": tuple(args.gitlab_host) if args.gitlab_host else None,
+        },
+    )
+    output = Path(app_config.output_path)
+    state_dir = Path(app_config.state_dir)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    state_dir.mkdir(parents=True, exist_ok=True)
+    store = StateStore(state_dir / "state.db")
     persisted_config = None
     if args.run_id is not None:
         persisted = store.get_run(args.run_id)
@@ -104,7 +121,7 @@ def _run_review(args: argparse.Namespace) -> int:
             host = (urlparse(url).hostname or "").lower()
             if host == "github.com" or host.endswith(".github.com"):
                 adapter = GitHubAdapter(token=os.getenv("GITHUB_TOKEN"))
-            elif _gitlab_host_allowed(host, args.gitlab_host, persisted_config):
+            elif _gitlab_host_allowed(host, list(app_config.gitlab_allowed_hosts), persisted_config):
                 adapter = GitLabAdapter(token=os.getenv("GITLAB_TOKEN"))
             else:
                 raise ValueError("unsupported persisted change-request URL; expected GitHub or GitLab PR/MR")
@@ -119,17 +136,22 @@ def _run_review(args: argparse.Namespace) -> int:
         host = (urlparse(args.url).hostname or "").lower()
         if host == "github.com" or host.endswith(".github.com"):
             adapter = GitHubAdapter(token=os.getenv("GITHUB_TOKEN"))
-        elif _gitlab_host_allowed(host, args.gitlab_host, None):
+        elif _gitlab_host_allowed(host, list(app_config.gitlab_allowed_hosts), None):
             adapter = GitLabAdapter(token=os.getenv("GITLAB_TOKEN"))
         else:
             raise ValueError("unsupported change-request URL; expected GitHub or GitLab PR/MR")
 
-    if args.offline:
+    if app_config.offline:
         client = DeterministicClient()
     else:
-        if not args.oneapi_base_url or not args.oneapi_api_key:
+        if not app_config.llm_base_url or not app_config.llm_api_key:
             raise ValueError("OneAPI requires --oneapi-base-url and --oneapi-api-key (or ONEAPI_BASE_URL/ONEAPI_API_KEY)")
-        client = OpenAICompatibleClient(args.oneapi_base_url, args.oneapi_api_key)
+        client = OpenAICompatibleClient(
+            app_config.llm_base_url,
+            app_config.llm_api_key,
+            timeout=app_config.llm_timeout_seconds,
+            pricing=app_config.model_pricing,
+        )
 
     if persisted_config is not None and args.config is None and not args.rules_dir:
         # A resumed run must use the exact rule snapshot that created its
@@ -143,17 +165,21 @@ def _run_review(args: argparse.Namespace) -> int:
         rules = _load_rule_registry(args.config, args.rules_dir)
     config = RunConfig(
         url=url,
-        budget_usd=args.budget_usd,
-        model=args.model,
-        fallback_model=args.fallback_model,
-        offline=args.offline,
-        output_path=str(args.output),
-        state_dir=str(args.state_dir),
+        budget_usd=app_config.budget_usd,
+        model=app_config.model,
+        fallback_model=app_config.fallback_model,
+        offline=app_config.offline,
+        max_diff_chars=app_config.max_diff_chars,
+        completion_tokens=app_config.completion_tokens,
+        output_path=str(output),
+        state_dir=str(state_dir),
         rules_directories=tuple(str(item) for item in getattr(rules.config, "directories", ())),
         rules_enabled_languages=tuple(getattr(rules.config, "enabled_languages", ())),
         rules_disabled=tuple(getattr(rules.config, "disabled_rules", ())),
         rules_snapshot=rules.snapshot(),
-        gitlab_allowed_hosts=tuple(args.gitlab_host),
+        gitlab_allowed_hosts=app_config.gitlab_allowed_hosts,
+        model_pricing=app_config.model_pricing,
+        llm_timeout_seconds=app_config.llm_timeout_seconds,
     )
     run_target = args.run_id
     if not run_target and url.startswith("local://"):
@@ -162,7 +188,7 @@ def _run_review(args: argparse.Namespace) -> int:
     if not run_target:
         run_target = url
     result = ReviewPipeline(store, adapter, ToolRegistry.with_builtins(), client, config, rules=rules).run(run_target)
-    args.output.write_text(result.markdown, encoding="utf-8")
+    output.write_text(result.markdown, encoding="utf-8")
     return 0
 
 

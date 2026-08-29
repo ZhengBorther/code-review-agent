@@ -19,8 +19,10 @@ class LLMClient(Protocol):
     def review(self, prompt: str, model: str, *, max_chars: int | None = None, max_tokens: int | None = None) -> LLMResponse: ...
 
 
-def estimate_cost(model: str, prompt_tokens: int, completion_tokens: int = 0) -> float:
-    rate = MODEL_COST_PER_1K.get(model, MODEL_COST_PER_1K["small"])
+def estimate_cost(model: str, prompt_tokens: int, completion_tokens: int = 0,
+                  pricing: dict[str, float] | None = None) -> float:
+    prices = pricing or MODEL_COST_PER_1K
+    rate = prices.get(model, prices.get("default", prices.get("small", 0.01)))
     return (prompt_tokens + completion_tokens) / 1000 * rate
 
 
@@ -29,10 +31,12 @@ def estimate_tokens(text: str) -> int:
 
 
 class OpenAICompatibleClient:
-    def __init__(self, base_url: str, api_key: str, timeout: float = 30.0):
+    def __init__(self, base_url: str, api_key: str, timeout: float = 30.0,
+                 pricing: dict[str, float] | None = None):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.timeout = timeout
+        self.pricing = pricing or MODEL_COST_PER_1K
 
     def review(self, prompt: str, model: str, *, max_chars: int | None = None, max_tokens: int | None = None) -> LLMResponse:
         if max_chars is not None:
@@ -68,7 +72,7 @@ class OpenAICompatibleClient:
             model=model,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
-            cost_usd=estimate_cost(model, prompt_tokens, completion_tokens),
+            cost_usd=estimate_cost(model, prompt_tokens, completion_tokens, self.pricing),
             usage_known=usage_known,
         )
 

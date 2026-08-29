@@ -191,3 +191,41 @@ def test_cli_accepts_explicit_self_hosted_gitlab_allowlist(tmp_path, monkeypatch
     assert main(["review", "https://git.example.com/group/project/-/merge_requests/3",
                  "--gitlab-host", "git.example.com", "--offline", "--state-dir", str(tmp_path / "state"),
                  "--output", str(output)]) == 0
+
+
+def test_cli_uses_unified_review_and_llm_config(tmp_path):
+    diff_file = tmp_path / "change.diff"
+    _write_go_diff(diff_file)
+    config_file = tmp_path / "review-agent.toml"
+    config_file.write_text(
+        """[review]
+budget_usd = 3.5
+max_diff_chars = 4096
+completion_tokens = 128
+offline = true
+output = "configured-report.md"
+state_dir = "configured-state"
+
+[llm]
+model = "custom-primary"
+fallback_model = "custom-fallback"
+timeout_seconds = 9
+
+[llm.pricing]
+custom-primary = 0.02
+custom-fallback = 0.01
+""",
+        encoding="utf-8",
+    )
+    assert main(["review", "--diff-file", str(diff_file), "--config", str(config_file)]) == 0
+    state_dir = tmp_path / "configured-state"
+    store = StateStore(state_dir / "state.db")
+    run = store.find_latest_run(
+        f"local://{diff_file.resolve()}#sha256="
+        + __import__("hashlib").sha256(diff_file.read_bytes()).hexdigest()
+    )
+    assert run is not None
+    assert run["config"]["model"] == "custom-primary"
+    assert run["config"]["budget_usd"] == 3.5
+    assert run["config"]["model_pricing"]["custom-primary"] == 0.02
+    assert (tmp_path / "configured-report.md").is_file()

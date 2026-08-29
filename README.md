@@ -18,15 +18,18 @@ python3 -m review_agent review \
 
 ## OneAPI
 
-OneAPI 使用 OpenAI Chat Completions 兼容协议。可通过参数或环境变量配置：
+OneAPI 使用 OpenAI Chat Completions 兼容协议。模型、fallback、超时和费率可写在统一 TOML 配置中；API key 不写入配置文件，只通过环境变量注入：
 
 ```bash
-export ONEAPI_BASE_URL=https://oneapi.example/v1
 export ONEAPI_API_KEY=your-key
-python3 -m review_agent review --diff-file change.diff --output report.md
+python3 -m review_agent review \
+  --diff-file change.diff \
+  --config review-agent.example.toml
 ```
 
-可选参数包括 `--model`、`--fallback-model` 和 `--budget-usd`。预算不足时会依次尝试降级模型、截断上下文，最后只保留规则工具结果。
+配置文件可同时管理 `[review]`、`[llm]`、`[llm.pricing]` 和 `[rules]`。命令行参数覆盖 TOML，环境变量覆盖 TOML；预算不足时会依次尝试降级模型、截断上下文，最后只保留规则工具结果。
+
+配置优先级为：代码默认值 < TOML 文件 < 环境变量 < CLI 参数。API key 只接受 `ONEAPI_API_KEY` 或 `OPENAI_API_KEY`，避免密钥落盘。
 
 ## GitHub / GitLab
 

@@ -98,6 +98,8 @@ class RunConfig(_Serializable):
     rules_disabled: tuple[str, ...] = ()
     rules_snapshot: list[dict[str, Any]] = field(default_factory=list)
     gitlab_allowed_hosts: tuple[str, ...] = ()
+    model_pricing: dict[str, float] = field(default_factory=dict)
+    llm_timeout_seconds: float = 30.0
 
     def to_dict(self) -> dict[str, Any]:
         payload = super().to_dict()

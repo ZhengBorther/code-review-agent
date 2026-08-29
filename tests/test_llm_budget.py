@@ -117,3 +117,22 @@ def test_reservation_commit_releases_and_rejects_reuse():
     assert controller.commit(reservation, 0.001) is True
     assert controller.reserved_usd == 0
     assert controller.commit(reservation, 0.001) is False
+
+
+def test_budget_controller_uses_configured_model_pricing():
+    config = RunConfig(url="x", model_pricing={"custom": 0.5})
+    controller = BudgetController(config)
+    assert controller.estimate_cost("custom", 1000) == 0.5
+
+
+def test_client_uses_configured_model_pricing(monkeypatch):
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def read(self):
+            return b'{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":1000,"completion_tokens":1000}}'
+    monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout: Response())
+    response = OpenAICompatibleClient(
+        "https://example/v1", "key", pricing={"custom": 0.5}
+    ).review("prompt", "custom")
+    assert response.cost_usd == 1.0
