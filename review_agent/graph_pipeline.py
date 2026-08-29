@@ -13,11 +13,12 @@ from typing import Any, TypedDict
 class ReviewState(TypedDict, total=False):
     target: str
     result: Any
+    prepared: bool
+    delivered: bool
 
 
 NODE_NAMES = (
-    "fetch", "sanitize", "tools", "load_rules", "split_languages",
-    "review_mdr_batches", "render",
+    "prepare", "review_mdr_pipeline", "deliver",
 )
 
 
@@ -43,22 +44,28 @@ def build_review_graph(pipeline: Any) -> ReviewGraphAdapter:
 
     graph_builder = StateGraph(ReviewState)
 
-    # 每个节点保留显式名称，实际 checkpoint 仍由 pipeline/SQLite 管理。
-    def passthrough(state: ReviewState) -> ReviewState:
-        return state
+    def prepare(state: ReviewState) -> ReviewState:
+        target = str(state.get("target", "")).strip()
+        if not target:
+            raise ValueError("review target is required")
+        return {"target": target, "prepared": True}
 
     def execute(state: ReviewState) -> ReviewState:
         return {"target": state["target"], "result": pipeline.run(state["target"])}
 
-    # The existing pipeline owns SQLite-aware stage execution. The graph keeps
-    # the same named boundaries while invoking it at the review node, so the
-    # optional framework cannot bypass recovery or budget accounting.
-    for name in NODE_NAMES[:-2]:
-        graph_builder.add_node(name, passthrough)
-    graph_builder.add_node("review_mdr_batches", execute)
-    graph_builder.add_node("render", passthrough)
-    graph_builder.add_edge(START, "fetch")
+    def deliver(state: ReviewState) -> ReviewState:
+        if "result" not in state:
+            raise RuntimeError("review pipeline produced no result")
+        return {"delivered": True}
+
+    # SQLite-aware Pipeline owns the detailed stage checkpoints. LangGraph
+    # intentionally models coarse orchestration instead of fake pass-through
+    # nodes that pretend to execute fetch/sanitize independently.
+    graph_builder.add_node("prepare", prepare)
+    graph_builder.add_node("review_mdr_pipeline", execute)
+    graph_builder.add_node("deliver", deliver)
+    graph_builder.add_edge(START, "prepare")
     for previous, current in zip(NODE_NAMES, NODE_NAMES[1:]):
         graph_builder.add_edge(previous, current)
-    graph_builder.add_edge("render", END)
+    graph_builder.add_edge("deliver", END)
     return ReviewGraphAdapter(pipeline, graph_builder.compile())

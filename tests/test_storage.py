@@ -73,3 +73,12 @@ def test_budget_reservation_is_atomic_and_settled(tmp_path):
     assert store.settle_reservation(run_id, "r1", 0.50)
     assert store.get_run(run_id)["cost_usd"] == 0.5
     assert store.reserve_budget(run_id, "r3", 0.5)
+
+
+def test_run_lease_allows_only_one_active_orchestrator(tmp_path):
+    store = StateStore(tmp_path / "state.db")
+    run_id = store.create_run(RunConfig(url="local://fixture"))
+    assert store.acquire_run_lease(run_id, "owner-1")
+    assert not store.acquire_run_lease(run_id, "owner-2")
+    store.release_run_lease(run_id, "owner-1")
+    assert store.acquire_run_lease(run_id, "owner-2")

@@ -72,6 +72,13 @@ class ConcurrentLanguageClient(JsonRuleClient):
         return super().review(prompt, model, **kwargs)
 
 
+class OneLanguageFailsClient(JsonRuleClient):
+    def review(self, prompt, model, **kwargs):
+        if "LANGUAGE: python" in prompt:
+            raise RuntimeError("python provider failure")
+        return super().review(prompt, model, **kwargs)
+
+
 def test_pipeline_runs_independent_language_batches_concurrently(tmp_path):
     client = ConcurrentLanguageClient()
     go_rule = make_rule()
@@ -101,6 +108,41 @@ def test_concurrent_batches_cannot_exceed_single_pr_budget(tmp_path):
     assert client.rule_calls == 1
     assert result.cost_usd <= config.budget_usd
     assert "budget_exceeded" in result.degradations
+
+
+def test_same_run_cannot_be_advanced_by_two_orchestrators(tmp_path):
+    client = ConcurrentLanguageClient()
+    pipeline = pipeline_with_rules(tmp_path, GO_DIFF, (make_rule(),), client)
+    run_id = pipeline.store.create_run(pipeline.config)
+    assert pipeline.store.acquire_run_lease(run_id, "other-worker")
+    try:
+        try:
+            pipeline.run(run_id)
+        except RuntimeError as exc:
+            assert "already active" in str(exc)
+        else:
+            raise AssertionError("second orchestrator must not enter an active run")
+    finally:
+        pipeline.store.release_run_lease(run_id, "other-worker")
+
+
+def test_concurrent_batch_failure_marks_run_failed_and_keeps_sibling_checkpoint(tmp_path):
+    client = OneLanguageFailsClient({"findings": []})
+    pipeline = pipeline_with_rules(
+        tmp_path, MIXED_DIFF,
+        (make_rule(), make_rule("PY-STYLE-001", "python")), client,
+    )
+    pipeline.config = replace(pipeline.config, max_concurrency=2)
+    try:
+        pipeline.run("local://partial-failure")
+    except RuntimeError as exc:
+        assert "concurrent MDR batches failed" in str(exc)
+    else:
+        raise AssertionError("failed language batch must fail the run")
+    run = pipeline.store.find_latest_run("local://partial-failure")
+    assert run["status"] == "failed"
+    assert pipeline.store.get_checkpoint(run["run_id"], "rules:go:0") is not None
+    assert any(trace["kind"] == "mdr_batch" and trace["error"] for trace in pipeline.store.get_traces(run["run_id"]))
 
 
 def test_pipeline_calls_llm_once_for_multiple_go_rules(tmp_path):

@@ -87,7 +87,7 @@ python3 -m review_agent review \
 
 ## 编排与离线评测
 
-LangGraph 是正式运行依赖。CLI 统一以固定节点图组织 `fetch`、`sanitize`、`tools`、`load_rules`、`split_languages`、`review_mdr_batches` 和 `render`，缺少 LangGraph 时启动失败，不再维护第二套 fallback 路径。SQLite 仍是 checkpoint、预算 reservation 和 trace 的事实来源。
+LangGraph 是正式运行依赖。CLI 统一使用 `prepare -> review_mdr_pipeline -> deliver` 三节点生产图；详细的 `fetch`、`sanitize`、`tools`、MDR 批次和 `render` checkpoint 仍由中间节点中的 SQLite-aware Pipeline 管理。缺少 LangGraph 时启动失败，不再维护第二套 fallback 路径。SQLite 仍是 checkpoint、预算 reservation 和 trace 的事实来源。
 
 不同语言的 MDR 批次按 `[review].max_concurrency` 受限并发执行；同步 HTTP 调用放入工作线程，避免阻塞事件循环。每个批次在调用模型前仍必须通过 SQLite 原子预算 reservation，因此并发不会突破单个 PR/MR 的 `budget_usd`。
 

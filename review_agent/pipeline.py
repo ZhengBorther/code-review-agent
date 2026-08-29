@@ -128,6 +128,9 @@ class ReviewPipeline:
                 self._trace(run_id, kind="mdr_batch", error=error,
                             metadata={"concurrent_batch_failure": True})
                 degradations.append("mdr_batch_failed")
+            if scheduled.errors:
+                # 成功兄弟 checkpoint 已持久化；让 run 失败，恢复时只重试失败批次。
+                raise RuntimeError("one or more concurrent MDR batches failed")
             return findings, list(dict.fromkeys(degradations))
 
         for language_diff in language_diffs:
@@ -292,6 +295,9 @@ class ReviewPipeline:
             run_id = self.store.create_run(config)
             run = self.store.get_run(run_id)
 
+        lease_token = str(uuid4())
+        if not self.store.acquire_run_lease(run_id, lease_token):
+            raise RuntimeError(f"run {run_id} is already active")
         current_stage = "fetch"
         failure_recorded = False
         try:
@@ -367,6 +373,7 @@ class ReviewPipeline:
             traces = [trace for trace in traces
                       if trace.get("kind") not in ("mdr_batch", "mdr_finding")
                       or trace.get("trace_id") in active_set
+                      or bool(trace.get("error"))
                       or (trace.get("kind") == "mdr_batch" and
                           "unknown_language" in (trace.get("metadata") or {}).get("rejections", []))]
             result = ReviewResult(run_id=run_id, request=request, findings=findings, traces=traces, cost_usd=float(self.store.get_run(run_id)["cost_usd"]), budget_usd=config.budget_usd, degradations=degradations)
@@ -389,3 +396,5 @@ class ReviewPipeline:
             if not failure_recorded:
                 self._fail(run_id, current_stage, exc)
             raise
+        finally:
+            self.store.release_run_lease(run_id, lease_token)

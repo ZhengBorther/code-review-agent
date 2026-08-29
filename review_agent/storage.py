@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -73,6 +73,13 @@ class StateStore:
                     updated_at TEXT NOT NULL,
                     FOREIGN KEY (run_id) REFERENCES runs(run_id) ON DELETE CASCADE
                 );
+                CREATE TABLE IF NOT EXISTS run_leases (
+                    run_id TEXT PRIMARY KEY,
+                    owner_token TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (run_id) REFERENCES runs(run_id) ON DELETE CASCADE
+                );
                 """
             )
             columns = {row["name"] for row in connection.execute("PRAGMA table_info(checkpoints)")}
@@ -95,6 +102,33 @@ class StateStore:
                 (run_id, config.url, json.dumps(config.to_dict()), config.budget_usd, now, now),
             )
         return run_id
+
+    def acquire_run_lease(self, run_id: str, owner_token: str, ttl_seconds: int = 900) -> bool:
+        """跨进程独占一个 run；过期 lease 可由后续恢复者接管。"""
+        now = datetime.now(timezone.utc)
+        expires = (now + timedelta(seconds=ttl_seconds)).isoformat()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT owner_token, expires_at FROM run_leases WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if row is not None and datetime.fromisoformat(row["expires_at"]) > now and row["owner_token"] != owner_token:
+                return False
+            connection.execute(
+                "INSERT INTO run_leases (run_id, owner_token, expires_at, updated_at) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(run_id) DO UPDATE SET owner_token=excluded.owner_token, "
+                "expires_at=excluded.expires_at, updated_at=excluded.updated_at",
+                (run_id, owner_token, expires, now.isoformat()),
+            )
+            return True
+
+    def release_run_lease(self, run_id: str, owner_token: str) -> None:
+        """仅 lease 所有者可以释放，防止旧进程删除新 lease。"""
+        with self._connect() as connection:
+            connection.execute(
+                "DELETE FROM run_leases WHERE run_id = ? AND owner_token = ?",
+                (run_id, owner_token),
+            )
 
     def get_checkpoint(self, run_id: str, stage: str) -> dict[str, Any] | None:
         """只返回成功阶段的数据；失败或过期记录仍可被审计查询。"""
