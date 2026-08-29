@@ -105,6 +105,7 @@ class RunConfig(_Serializable):
     model_pricing: dict[str, float] = field(default_factory=dict)
     llm_timeout_seconds: float = 30.0
     review_mode: str = "mdr_only"
+    max_concurrency: int = 2
 
     def to_dict(self) -> dict[str, Any]:
         payload = super().to_dict()

@@ -37,6 +37,7 @@ class AppConfig:
     rules: RulesConfig = field(default_factory=RulesConfig)
     gitlab_allowed_hosts: tuple[str, ...] = ()
     review_mode: str = "mdr_only"
+    max_concurrency: int = 2
 
 
 def _table(data: Mapping[str, Any], name: str) -> dict[str, Any]:
@@ -95,6 +96,7 @@ def load_app_config(
         "llm_timeout_seconds": float(value(llm, "timeout_seconds", "ONEAPI_TIMEOUT_SECONDS", 30.0)),
         "offline": boolean(value(review, "offline", "REVIEW_OFFLINE", False), "review.offline"),
         "review_mode": str(value(review, "mode", "REVIEW_MODE", "mdr_only")),
+        "max_concurrency": int(value(review, "max_concurrency", "REVIEW_MAX_CONCURRENCY", 2)),
     }
     # 配置文件声明的路径相对配置文件解析，环境变量和 CLI 路径仍相对当前进程目录。
     if config_path is not None and "REVIEW_OUTPUT" not in env and "output" in review:
@@ -124,6 +126,8 @@ def load_app_config(
         raise ValueError("review budget and token limits must be positive")
     if resolved["llm_timeout_seconds"] <= 0:
         raise ValueError("llm timeout_seconds must be positive")
+    if not 1 <= resolved["max_concurrency"] <= 16:
+        raise ValueError("review.max_concurrency must be between 1 and 16")
     if resolved["review_mode"] != "mdr_only":
         raise ValueError("review.mode must be mdr_only; free-form generic review is disabled")
     return AppConfig(rules=load_rules_config(path, cli_directories), **resolved)

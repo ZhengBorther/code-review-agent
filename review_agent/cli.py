@@ -187,6 +187,7 @@ def _run_review(args: argparse.Namespace) -> int:
         model_pricing=app_config.model_pricing,
         llm_timeout_seconds=app_config.llm_timeout_seconds,
         review_mode=app_config.review_mode,
+        max_concurrency=app_config.max_concurrency,
     )
     run_target = args.run_id
     if not run_target and url.startswith("local://"):
