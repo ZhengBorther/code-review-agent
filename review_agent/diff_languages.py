@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import fnmatch
 import re
 from dataclasses import dataclass
 
@@ -48,13 +49,15 @@ def _language(path: str) -> str | None:
     return None
 
 
-def split_diff_by_language(diff: str) -> tuple[LanguageDiff, ...]:
+def split_diff_by_language(diff: str, skip_globs: tuple[str, ...] = ()) -> tuple[LanguageDiff, ...]:
     """保留完整 diff 片段，无法识别扩展名的文件归入 ``unknown``。"""
     starts = [match.start() for match in _SECTION.finditer(diff)]
     sections = [diff[start:end] for start, end in zip(starts, starts[1:] + [len(diff)])]
     grouped: dict[str, list[tuple[str, str]]] = {}
     for section in sections:
         path = _path_for_section(section)
+        if path and any(fnmatch.fnmatch(path, pattern) for pattern in skip_globs):
+            continue
         language = _language(path) if path else None
         if language is not None:
             grouped.setdefault(language, []).append((path, section))

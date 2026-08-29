@@ -52,13 +52,16 @@ def build_review_graph(pipeline: Any) -> ReviewGraphAdapter:
     def passthrough(state: ReviewState) -> ReviewState:
         return state
 
-    for name in NODE_NAMES[:-1]:
-        graph_builder.add_node(name, passthrough)
-
     def execute(state: ReviewState) -> ReviewState:
         return {"target": state["target"], "result": pipeline.run(state["target"])}
 
-    graph_builder.add_node("render", execute)
+    # The existing pipeline owns SQLite-aware stage execution. The graph keeps
+    # the same named boundaries while invoking it at the review node, so the
+    # optional framework cannot bypass recovery or budget accounting.
+    for name in NODE_NAMES[:-2]:
+        graph_builder.add_node(name, passthrough)
+    graph_builder.add_node("review_mdr_batches", execute)
+    graph_builder.add_node("render", passthrough)
     graph_builder.add_edge(START, "fetch")
     for previous, current in zip(NODE_NAMES, NODE_NAMES[1:]):
         graph_builder.add_edge(previous, current)

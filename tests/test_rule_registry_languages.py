@@ -71,6 +71,15 @@ def test_splits_unified_diff_by_language_and_preserves_sections():
     assert "service.py" not in grouped["go"].diff
 
 
+def test_split_can_skip_profile_globs():
+    diff = (
+        "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n+a\n"
+        "diff --git a/vendor/lib.py b/vendor/lib.py\n--- a/vendor/lib.py\n+++ b/vendor/lib.py\n+pass\n"
+    )
+    grouped = split_diff_by_language(diff, ("vendor/**",))
+    assert tuple(item.language for item in grouped) == ("go",)
+
+
 def test_deleted_files_are_skipped_and_sections_are_stably_sorted():
     diff = (
         "diff --git a/z.go b/z.go\n--- a/z.go\n+++ b/z.go\n+z\n"

@@ -44,3 +44,14 @@ def test_schema_rejects_reversed_line_range():
     result = parse_rule_response(json.dumps(payload), _batch())
     assert result.findings == ()
     assert "line_end" in result.rejections[0]
+
+
+def test_schema_rejects_boolean_and_string_line_numbers_without_echoing_input():
+    payload = {"findings": [{
+        "rule_id": "GO-STYLE-001", "file_path": "internal/user.go",
+        "line_start": "password=secret", "title": "类型错误",
+        "body": "说明文本", "evidence": "证据文本",
+    }]}
+    result = parse_rule_response(json.dumps(payload), _batch())
+    assert result.findings == ()
+    assert "password=secret" not in " ".join(result.rejections)

@@ -6,7 +6,7 @@ import json
 import hashlib
 from dataclasses import dataclass, replace
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, ValidationError, model_validator
 
 from .diff_languages import LanguageDiff
 from .models import Finding
@@ -34,14 +34,14 @@ class MdrFindingPayload(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    rule_id: str = Field(min_length=1, max_length=20_000)
-    file_path: str = Field(min_length=1, max_length=20_000)
-    line_start: int | None = Field(default=None, gt=0)
-    line_end: int | None = Field(default=None, gt=0)
-    title: str = Field(min_length=1, max_length=20_000)
-    body: str = Field(min_length=1, max_length=20_000)
-    evidence: str = Field(min_length=1, max_length=20_000)
-    confidence: str | None = None
+    rule_id: StrictStr = Field(min_length=1, max_length=20_000)
+    file_path: StrictStr = Field(min_length=1, max_length=20_000)
+    line_start: StrictInt | None = Field(default=None, gt=0)
+    line_end: StrictInt | None = Field(default=None, gt=0)
+    title: StrictStr = Field(min_length=1, max_length=20_000)
+    body: StrictStr = Field(min_length=1, max_length=20_000)
+    evidence: StrictStr = Field(min_length=1, max_length=20_000)
+    confidence: StrictStr | None = None
 
     @model_validator(mode="after")
     def validate_line_range(self) -> "MdrFindingPayload":
@@ -179,7 +179,14 @@ def parse_rule_response(text: str, batch: RuleBatch) -> RuleParseResult:
     try:
         payload = MdrResponsePayload.model_validate_json(text)
     except ValidationError as exc:
-        return RuleParseResult(rejections=(str(exc),))
+        # Do not copy Pydantic's input_value into trace metadata: it may contain
+        # secrets or an entire untrusted model response.
+        reasons = tuple(
+            f"{'.'.join(str(part) for part in error.get('loc', ())) or 'response'}: "
+            f"{redact_secrets(str(error.get('msg', error.get('type', 'invalid')))).text}"
+            for error in exc.errors()
+        )
+        return RuleParseResult(rejections=reasons or ("response schema validation failed",))
     rule_map = {rule.id: rule for rule in batch.rules}
     files = set(batch.files)
     findings: list[Finding] = []

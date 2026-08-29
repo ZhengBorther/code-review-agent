@@ -106,17 +106,18 @@ class RunConfig(_Serializable):
     llm_timeout_seconds: float = 30.0
     review_mode: str = "mdr_only"
     max_concurrency: int = 2
+    profile_skip_globs: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         payload = super().to_dict()
-        for key in ("rules_directories", "rules_enabled_languages", "rules_disabled", "gitlab_allowed_hosts"):
+        for key in ("rules_directories", "rules_enabled_languages", "rules_disabled", "gitlab_allowed_hosts", "profile_skip_globs"):
             payload[key] = list(payload[key])
         return payload
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "RunConfig":
         payload = dict(value)
-        for key in ("rules_directories", "rules_enabled_languages", "rules_disabled", "gitlab_allowed_hosts"):
+        for key in ("rules_directories", "rules_enabled_languages", "rules_disabled", "gitlab_allowed_hosts", "profile_skip_globs"):
             if key in payload:
                 payload[key] = tuple(payload[key])
         return cls(**{key: val for key, val in payload.items() if key in {field.name for field in fields(cls)}})

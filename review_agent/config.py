@@ -38,6 +38,7 @@ class AppConfig:
     gitlab_allowed_hosts: tuple[str, ...] = ()
     review_mode: str = "mdr_only"
     max_concurrency: int = 2
+    profile_skip_globs: tuple[str, ...] = ()
 
 
 def _table(data: Mapping[str, Any], name: str) -> dict[str, Any]:

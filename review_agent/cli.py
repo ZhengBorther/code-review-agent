@@ -16,6 +16,7 @@ from .graph_pipeline import build_review_graph
 from .llm import DeterministicClient, OpenAICompatibleClient
 from .models import RunConfig
 from .pipeline import ReviewPipeline
+from .profiles import load_profiles, select_profile
 from .rules import MdrRuleLoader, RuleRegistry, RuleLoadError
 from .storage import StateStore
 from .tools import ToolRegistry
@@ -86,6 +87,8 @@ def _parser() -> argparse.ArgumentParser:
     review.add_argument("--offline", action="store_true", default=None, help="use deterministic local model; never access network")
     review.add_argument("--review-mode", choices=("mdr_only",), default=None, help="review mode; only MDR rules are supported")
     review.add_argument("--gitlab-host", action="append", default=[], help="explicitly authorize a self-hosted GitLab hostname; repeatable")
+    review.add_argument("--profile", type=Path, help="TOML repository profile")
+    review.add_argument("--repo-path", type=Path, help="repository path used to select a profile")
     return parser
 
 
@@ -93,9 +96,19 @@ def _run_review(args: argparse.Namespace) -> int:
     url = args.url or ""
     if args.run_id is None and args.diff_file is None and not args.url:
         raise ValueError("provide a PR/MR URL or --diff-file")
+    profile = None
+    profile_rules_dirs = list(args.rules_dir)
+    if args.profile is not None:
+        profiles = load_profiles(args.profile)
+        if args.repo_path is None:
+            raise ValueError("--profile requires --repo-path")
+        profile = select_profile(profiles, args.repo_path)
+        if profile is None:
+            raise ValueError(f"no profile matches --repo-path {args.repo_path}")
+        profile_rules_dirs.extend(profile.rules_dirs)
     app_config = load_app_config(
         args.config,
-        args.rules_dir,
+        profile_rules_dirs,
         overrides={
             "budget_usd": args.budget_usd,
             "model": args.model,
@@ -168,7 +181,7 @@ def _run_review(args: argparse.Namespace) -> int:
         )
         rules = RuleRegistry.from_snapshot(snapshot_config, persisted_config.get("rules_snapshot", []))
     else:
-        rules = _load_rule_registry(args.config, args.rules_dir)
+        rules = _load_rule_registry(args.config, profile_rules_dirs)
     config = RunConfig(
         url=url,
         budget_usd=app_config.budget_usd,
@@ -188,6 +201,7 @@ def _run_review(args: argparse.Namespace) -> int:
         llm_timeout_seconds=app_config.llm_timeout_seconds,
         review_mode=app_config.review_mode,
         max_concurrency=app_config.max_concurrency,
+        profile_skip_globs=profile.skip_globs if profile else (),
     )
     run_target = args.run_id
     if not run_target and url.startswith("local://"):
