@@ -84,7 +84,7 @@ class ReviewPipeline:
             stage = checkpoint["stage"]
             base = stage[:-len(":reservation")] if stage.endswith(":reservation") else stage
             if base not in valid_stages:
-                self.store.mark_checkpoint(run_id, stage, "superseded")
+                self.store.supersede_checkpoint(run_id, stage)
 
         for language_diff in language_diffs:
             rules = self.rules.applicable(language_diff.language)
@@ -102,6 +102,11 @@ class ReviewPipeline:
             for batch_index, batch in enumerate(batches):
                 checkpoint_key = f"rules:{batch.language}:{batch_index}"
                 expected = {"ruleset_hash": ruleset_hash, "diff_hash": batch.diff_hash}
+                for stale_stage in (checkpoint_key, checkpoint_key + ":reservation"):
+                    stale_record = self.store.get_checkpoint_record(run_id, stale_stage)
+                    if (stale_record and stale_record["status"] == "success" and
+                            any(stale_record["payload"].get(key) != value for key, value in expected.items())):
+                        self.store.supersede_checkpoint(run_id, stale_stage)
                 saved = self.store.get_checkpoint(run_id, checkpoint_key)
                 if saved and all(saved.get(key) == value for key, value in expected.items()):
                     findings.extend(Finding.from_dict(item) for item in saved.get("findings", []))
@@ -117,6 +122,38 @@ class ReviewPipeline:
                         continue
                     token = reservation_state.get("token")
                     db_reservation = self.store.get_reservation(run_id, token) if token else None
+                    # Settlement is durable even if trace/checkpoint writes were
+                    # interrupted. Rebuild findings from the atomically stored
+                    # provider response instead of emitting an empty result.
+                    if db_reservation and db_reservation.get("status") == "completed":
+                        result = db_reservation.get("result") or {}
+                        response_text = result.get("response", "")
+                        parsed_items = result.get("parsed_findings") or []
+                        if response_text or parsed_items:
+                            parsed = parse_rule_response(response_text, batch) if response_text else None
+                            raw_findings = parsed_items or ([item.to_dict() for item in parsed.findings] if parsed else [])
+                            recovered_prompt = result.get("prompt", build_rule_prompt(batch))
+                            recovered_input_hash = _hash(recovered_prompt)
+                            batch_trace_id = self._trace(run_id, kind="mdr_batch", input_hash=recovered_input_hash,
+                                prompt=recovered_prompt, response=response_text,
+                                model=result.get("model", reservation_state.get("model", "")),
+                                ruleset_hash=ruleset_hash, prompt_tokens=result.get("prompt_tokens", 0),
+                                completion_tokens=result.get("completion_tokens", 0), cost_usd=db_reservation.get("actual_usd", 0.0),
+                                metadata={"rule_ids": [rule.id for rule in batch.rules], "recovery": True,
+                                          "rejections": result.get("rejections", [])})
+                            recovered_findings = []
+                            finding_trace_ids = []
+                            for item in raw_findings:
+                                finding = Finding.from_dict(item)
+                                finding_trace_id = self._trace(run_id, kind="mdr_finding", input_hash=recovered_input_hash,
+                                    response=finding.body, ruleset_hash=ruleset_hash, parent_trace_id=batch_trace_id,
+                                    rule_id=finding.rule_id, metadata={"batch_trace_id": batch_trace_id, "recovery": True})
+                                recovered_findings.append(replace(finding, trace_id=finding_trace_id, confidence="advisory"))
+                                finding_trace_ids.append(finding_trace_id)
+                            self.store.save_checkpoint(run_id, reservation_key, {**reservation_state, **expected, "status": "completed", "findings": [item.to_dict() for item in recovered_findings], "batch_trace_id": batch_trace_id, "finding_trace_ids": finding_trace_ids})
+                            self.store.save_checkpoint(run_id, checkpoint_key, {**expected, "findings": [item.to_dict() for item in recovered_findings], "batch_trace_id": batch_trace_id, "finding_trace_ids": finding_trace_ids})
+                            findings.extend(recovered_findings)
+                            continue
                     had_inflight = bool(db_reservation and db_reservation.get("status") == "in_flight")
                     if had_inflight:
                         self.store.settle_reservation(run_id, token, 0.0)
@@ -157,14 +194,21 @@ class ReviewPipeline:
                 started = time.monotonic()
                 try:
                     response = self.llm.review(prompt, decision.model, max_chars=decision.max_chars, max_tokens=decision.max_tokens or config.completion_tokens)
-                    accepted = controller.commit(reservation, response.cost_usd)
-                    persisted_accepted = self.store.settle_reservation(run_id, reservation.token, response.cost_usd)
-                    accepted = accepted and persisted_accepted
                     parsed = parse_rule_response(response.text, batch)
+                    accepted = controller.commit(reservation, response.cost_usd)
+                    persisted_accepted = self.store.settle_reservation(
+                        run_id, reservation.token, response.cost_usd,
+                        {"response": response.text, "parsed_findings": [item.to_dict() for item in parsed.findings],
+                         "rejections": list(parsed.rejections), "prompt": prompt if decision.max_chars is None else prompt[:decision.max_chars],
+                         "model": response.model or decision.model, "prompt_tokens": response.prompt_tokens,
+                         "completion_tokens": response.completion_tokens},
+                    )
+                    accepted = accepted and persisted_accepted
                     rejection_messages = list(parsed.rejections)
                     if not accepted:
                         rejection_messages.append("provider_cost_exceeded_budget")
-                    batch_trace_id = self._trace(run_id, kind="mdr_batch", input_hash=batch.diff_hash, prompt=prompt if decision.max_chars is None else prompt[:decision.max_chars], response=response.text, model=response.model or decision.model, ruleset_hash=ruleset_hash, prompt_tokens=response.prompt_tokens, completion_tokens=response.completion_tokens, cost_usd=response.cost_usd, duration_ms=int((time.monotonic() - started) * 1000), error="provider_cost_exceeded_budget" if not accepted else "", metadata={"rule_ids": [rule.id for rule in batch.rules], "rejections": rejection_messages})
+                    sent_prompt = prompt if decision.max_chars is None else prompt[:decision.max_chars]
+                    batch_trace_id = self._trace(run_id, kind="mdr_batch", input_hash=_hash(sent_prompt), prompt=sent_prompt, response=response.text, model=response.model or decision.model, ruleset_hash=ruleset_hash, prompt_tokens=response.prompt_tokens, completion_tokens=response.completion_tokens, cost_usd=response.cost_usd, duration_ms=int((time.monotonic() - started) * 1000), error="provider_cost_exceeded_budget" if not accepted else "", metadata={"rule_ids": [rule.id for rule in batch.rules], "rejections": rejection_messages, "diff_hash": batch.diff_hash})
                     batch_findings: list[Finding] = []
                     finding_trace_ids: list[str] = []
                     if accepted:
@@ -327,7 +371,12 @@ class ReviewPipeline:
                       or (trace.get("kind") == "mdr_batch" and
                           "unknown_language" in (trace.get("metadata") or {}).get("rejections", []))]
             result = ReviewResult(run_id=run_id, request=request, findings=findings, traces=traces, cost_usd=float(self.store.get_run(run_id)["cost_usd"]), budget_usd=config.budget_usd, degradations=degradations)
-            render_input_hash = _hash("|".join(sorted(item.trace_id for item in findings) + sorted(active_trace_ids)))
+            diagnostic_trace_ids = [trace.get("trace_id", "") for trace in traces
+                                    if trace.get("kind") == "mdr_batch" and
+                                    "unknown_language" in (trace.get("metadata") or {}).get("rejections", [])]
+            render_input_hash = _hash("|".join(sorted(item.trace_id for item in findings) +
+                                             sorted(active_trace_ids + diagnostic_trace_ids) +
+                                             sorted(degradations)))
             if render is None or render.get("input_hash") != render_input_hash:
                 current_stage = "render"
                 from .report import render_markdown

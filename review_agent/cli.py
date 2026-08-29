@@ -15,7 +15,7 @@ from .config import RulesConfig, load_rules_config
 from .llm import DeterministicClient, OpenAICompatibleClient
 from .models import RunConfig
 from .pipeline import ReviewPipeline
-from .rules import MdrRuleLoader, RuleRegistry
+from .rules import MdrRuleLoader, RuleRegistry, RuleLoadError
 from .storage import StateStore
 from .tools import ToolRegistry
 
@@ -45,9 +45,21 @@ def _load_rule_registry(config_path: Path | None, rule_dirs: list[Path] | None, 
     )
     registry = RuleRegistry(effective)
     loader = MdrRuleLoader()
+    source_roots: dict[str, Path] = {}
     for directory in effective.directories:
         for rule in loader.load(directory):
-            registry.register(replace(rule, source=str((directory / rule.source).resolve())))
+            try:
+                registry.register(rule)
+            except RuleLoadError as exc:
+                if "duplicate rule id" in str(exc):
+                    existing_root = source_roots.get(rule.id)
+                    existing = (existing_root / rule.source) if existing_root else Path(rule.source)
+                    current = Path(directory) / rule.source
+                    raise RuleLoadError(
+                        f"duplicate rule id: {rule.id} (sources: {existing.resolve()}, {current.resolve()})"
+                    ) from exc
+                raise
+            source_roots[rule.id] = Path(directory)
     return registry
 
 

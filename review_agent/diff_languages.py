@@ -32,6 +32,11 @@ def _path_for_section(section: str) -> str | None:
             if value.startswith("b/"):
                 return value[2:]
             return value
+    # Binary and malformed sections may omit +++; recover the path from the
+    # canonical git header so they remain observable as unknown changes.
+    header = re.search(r"^diff --git a/(\S+) b/(\S+)$", section, re.MULTILINE)
+    if header:
+        return header.group(2)
     return None
 
 

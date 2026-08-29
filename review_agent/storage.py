@@ -68,6 +68,7 @@ class StateStore:
                     reserved_usd REAL NOT NULL,
                     status TEXT NOT NULL DEFAULT 'in_flight',
                     actual_usd REAL NOT NULL DEFAULT 0,
+                    result_json TEXT NOT NULL DEFAULT '{}',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     FOREIGN KEY (run_id) REFERENCES runs(run_id) ON DELETE CASCADE
@@ -79,6 +80,9 @@ class StateStore:
                 connection.execute(
                     "ALTER TABLE checkpoints ADD COLUMN status TEXT NOT NULL DEFAULT 'success'"
                 )
+            reservation_columns = {row["name"] for row in connection.execute("PRAGMA table_info(reservations)")}
+            if "result_json" not in reservation_columns:
+                connection.execute("ALTER TABLE reservations ADD COLUMN result_json TEXT NOT NULL DEFAULT '{}'")
 
     def create_run(self, config: RunConfig) -> str:
         run_id = str(uuid.uuid4())
@@ -127,10 +131,14 @@ class StateStore:
     def get_reservation(self, run_id: str, token: str) -> dict[str, Any] | None:
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT token, reserved_usd, status, actual_usd, created_at, updated_at FROM reservations WHERE run_id = ? AND token = ?",
+                "SELECT token, reserved_usd, status, actual_usd, result_json, created_at, updated_at FROM reservations WHERE run_id = ? AND token = ?",
                 (run_id, token),
             ).fetchone()
-        return dict(row) if row is not None else None
+        if row is None:
+            return None
+        result = dict(row)
+        result["result"] = json.loads(result.pop("result_json") or "{}")
+        return result
 
     def save_checkpoint(
         self, run_id: str, stage: str, payload: dict[str, Any], *, status: str = "success"
@@ -154,6 +162,30 @@ class StateStore:
                 "UPDATE checkpoints SET status = ?, updated_at = ? WHERE run_id = ? AND stage = ?",
                 (status, _utc_now(), run_id, stage),
             )
+
+    def supersede_checkpoint(self, run_id: str, stage: str) -> None:
+        """Mark a checkpoint superseded and release its reservation atomically."""
+        now = _utc_now()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT payload_json FROM checkpoints WHERE run_id = ? AND stage = ?",
+                (run_id, stage),
+            ).fetchone()
+            if row is None:
+                return
+            payload = json.loads(row["payload_json"])
+            connection.execute(
+                "UPDATE checkpoints SET status = 'superseded', updated_at = ? WHERE run_id = ? AND stage = ?",
+                (now, run_id, stage),
+            )
+            token = payload.get("token") if stage.endswith(":reservation") else None
+            if token:
+                connection.execute(
+                    "UPDATE reservations SET status = 'released', actual_usd = 0, updated_at = ? "
+                    "WHERE run_id = ? AND token = ? AND status = 'in_flight'",
+                    (now, run_id, token),
+                )
 
     def save_trace(self, trace: TraceRecord) -> None:
         now = _utc_now()
@@ -231,7 +263,7 @@ class StateStore:
             )
             return True
 
-    def settle_reservation(self, run_id: str, token: str, actual_usd: float) -> bool:
+    def settle_reservation(self, run_id: str, token: str, actual_usd: float, result: dict[str, Any] | None = None) -> bool:
         """Release a reservation and atomically account actual provider cost."""
         actual = max(0.0, float(actual_usd))
         now = _utc_now()
@@ -248,8 +280,19 @@ class StateStore:
             accepted = actual <= remaining + 1e-12
             accounted = actual if accepted else remaining
             connection.execute("UPDATE runs SET cost_usd = cost_usd + ?, updated_at = ? WHERE run_id = ?", (accounted, now, run_id))
-            connection.execute("UPDATE reservations SET status = ?, actual_usd = ?, updated_at = ? WHERE token = ?", ("completed" if accepted else "rejected", actual, now, token))
+            connection.execute("UPDATE reservations SET status = ?, actual_usd = ?, result_json = ?, updated_at = ? WHERE token = ?", ("completed" if accepted else "rejected", actual, json.dumps(result or {}, ensure_ascii=True), now, token))
             return accepted
+
+    def release_reservation(self, run_id: str, token: str) -> bool:
+        """Release an in-flight reservation without charging provider cost."""
+        now = _utc_now()
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "UPDATE reservations SET status = 'released', actual_usd = 0, updated_at = ? "
+                "WHERE run_id = ? AND token = ? AND status = 'in_flight'",
+                (now, run_id, token),
+            )
+            return cursor.rowcount > 0
 
     def update_run(self, run_id: str, *, status: str | None = None, cost_usd: float | None = None) -> None:
         updates: list[str] = []

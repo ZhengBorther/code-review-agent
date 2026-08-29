@@ -236,3 +236,73 @@ def test_removed_rule_regenerates_report_without_old_rule_trace(tmp_path):
     second = pipeline_with_rules(tmp_path, GO_DIFF, (), client).run(first.run_id)
     assert "GO-STYLE-001" not in second.markdown
     assert "mdr_finding" not in second.markdown
+
+
+def test_superseding_rule_checkpoint_releases_inflight_reservation(tmp_path):
+    client = JsonRuleClient({"findings": []})
+    pipeline = pipeline_with_rules(tmp_path, GO_DIFF, (make_rule(),), client)
+    first = pipeline.run("local://supersede")
+    store = StateStore(tmp_path / "state.db")
+    token = "stale-token"
+    assert store.reserve_budget(first.run_id, token, 0.25)
+    store.save_checkpoint(first.run_id, "rules:go:99:reservation", {
+        "ruleset_hash": "old", "diff_hash": "old", "status": "in_flight",
+        "token": token, "reserved_usd": 0.25,
+    })
+    # New registry has no effective rule, so the old stage is superseded.
+    resumed = pipeline_with_rules(tmp_path, GO_DIFF, (), client).run(first.run_id)
+    assert resumed.run_id == first.run_id
+    assert store.get_reservation(first.run_id, token)["status"] != "in_flight"
+
+
+def test_changed_ruleset_same_batch_releases_old_reservation(tmp_path):
+    client = JsonRuleClient({"findings": []})
+    first_pipeline = pipeline_with_rules(tmp_path, GO_DIFF, (make_rule(),), client)
+    first = first_pipeline.run("local://same-batch-supersede")
+    store = StateStore(tmp_path / "state.db")
+    token = "same-batch-stale"
+    assert store.reserve_budget(first.run_id, token, 0.2)
+    old_hash = first_pipeline.rules.ruleset_hash("go")
+    store.save_checkpoint(first.run_id, "rules:go:0:reservation", {
+        "ruleset_hash": old_hash, "diff_hash": "old-diff", "status": "in_flight",
+        "token": token, "reserved_usd": 0.2,
+    })
+    changed = replace(make_rule(), prompt_hint="changed")
+    pipeline_with_rules(tmp_path, GO_DIFF, (changed,), client).run(first.run_id)
+    assert store.get_reservation(first.run_id, token)["status"] != "in_flight"
+
+
+def test_completed_reservation_recovery_rebuilds_findings_when_trace_write_crashes(tmp_path):
+    payload = {"findings": [{"rule_id": "GO-STYLE-001", "file_path": "internal/user.go", "line_start": 1,
+                              "title": "too many parameters", "body": "use params struct", "evidence": "five"}]}
+    client = JsonRuleClient(payload)
+    pipeline = pipeline_with_rules(tmp_path, GO_DIFF, (make_rule(),), client)
+    original = pipeline.store.save_trace
+    crashed = {"value": False}
+
+    def save_trace(trace):
+        if trace.kind == "mdr_batch" and not crashed["value"]:
+            crashed["value"] = True
+            raise RuntimeError("simulated trace crash after settlement")
+        return original(trace)
+
+    pipeline.store.save_trace = save_trace
+    try:
+        pipeline.run("local://trace-crash")
+    except RuntimeError:
+        pass
+    run = StateStore(tmp_path / "state.db").find_latest_run("local://trace-crash")
+    resumed = pipeline_with_rules(tmp_path, GO_DIFF, (make_rule(),), client).run(run["run_id"])
+    assert client.rule_calls == 1
+    assert any(item.rule_id == "GO-STYLE-001" for item in resumed.findings)
+
+
+def test_unknown_diagnostic_trace_changes_render_identity(tmp_path):
+    diff = "diff --git a/data.xyz b/data.xyz\n--- a/data.xyz\n+++ b/data.xyz\n+value\n"
+    client = JsonRuleClient({"findings": []})
+    first = pipeline_with_rules(tmp_path, diff, (), client).run("local://unknown-render")
+    second = pipeline_with_rules(tmp_path, diff, (), client).run(first.run_id)
+    first_unknown = [t["trace_id"] for t in first.traces if t.get("error") == "unknown_language"]
+    second_unknown = [t["trace_id"] for t in second.traces if t.get("error") == "unknown_language"]
+    assert first_unknown and second_unknown and first_unknown[-1] != second_unknown[-1]
+    assert second_unknown[-1] in second.markdown

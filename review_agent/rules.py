@@ -73,7 +73,7 @@ class RuleRegistry:
     def applicable(self, language: str) -> tuple[ReviewRule, ...]:
         target = language.lower()
         enabled = {item.lower() for item in getattr(self.config, "enabled_languages", ())}
-        if enabled and target not in enabled:
+        if enabled and target != "unknown" and target not in enabled:
             return ()
         disabled = set(getattr(self.config, "disabled_rules", ()))
         rules = (rule for rule in self._rules.values()

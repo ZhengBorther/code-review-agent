@@ -93,3 +93,16 @@ def test_unknown_extensions_remain_observable_in_unknown_group():
     assert grouped[0].language == "unknown"
     assert grouped[0].files == ("Makefile",)
     assert "echo ok" in grouped[0].diff
+
+
+def test_common_rules_apply_to_unknown_even_with_language_allowlist():
+    registry = RuleRegistry(RulesConfig(enabled_languages=("go",)))
+    registry.register(make_rule("COMMON-STYLE-001", "common"))
+    assert [rule.id for rule in registry.applicable("unknown")] == ["COMMON-STYLE-001"]
+
+
+def test_binary_diff_section_is_observable_as_unknown():
+    diff = "diff --git a/assets/logo.bin b/assets/logo.bin\nnew file mode 100644\nBinary files /dev/null and b/assets/logo.bin differ\n"
+    grouped = split_diff_by_language(diff)
+    assert grouped[0].language == "unknown"
+    assert grouped[0].files == ("assets/logo.bin",)
