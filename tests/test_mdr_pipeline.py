@@ -1,5 +1,7 @@
 import json
 import sqlite3
+import threading
+import time
 from dataclasses import replace
 
 from review_agent.adapters import LocalDiffAdapter
@@ -51,6 +53,54 @@ def pipeline_with_rules(tmp_path, diff, rules, client):
         RunConfig(url="local://rules", budget_usd=1.0, offline=True),
         rules=registry,
     )
+
+
+class ConcurrentLanguageClient(JsonRuleClient):
+    def __init__(self):
+        super().__init__({"findings": []})
+        self.active = 0
+        self.peak = 0
+        self.lock = threading.Lock()
+
+    def review(self, prompt, model, **kwargs):
+        with self.lock:
+            self.active += 1
+            self.peak = max(self.peak, self.active)
+        time.sleep(0.05)
+        with self.lock:
+            self.active -= 1
+        return super().review(prompt, model, **kwargs)
+
+
+def test_pipeline_runs_independent_language_batches_concurrently(tmp_path):
+    client = ConcurrentLanguageClient()
+    go_rule = make_rule()
+    py_rule = make_rule("PY-STYLE-001", "python")
+    pipeline = pipeline_with_rules(tmp_path, MIXED_DIFF, (go_rule, py_rule), client)
+    pipeline.config = replace(pipeline.config, max_concurrency=2)
+    result = pipeline.run("local://concurrent")
+    assert client.peak == 2
+    assert sum(trace["kind"] == "mdr_batch" for trace in result.traces) == 2
+
+
+def test_concurrent_batches_cannot_exceed_single_pr_budget(tmp_path):
+    client = ConcurrentLanguageClient()
+    diff_file = tmp_path / "change.diff"
+    diff_file.write_text(MIXED_DIFF, encoding="utf-8")
+    registry = RuleRegistry(RulesConfig())
+    registry.register(make_rule())
+    registry.register(make_rule("PY-STYLE-001", "python"))
+    config = RunConfig(
+        url="local://budget-race", budget_usd=0.01,
+        model="small", fallback_model="small", max_concurrency=2,
+    )
+    result = ReviewPipeline(
+        StateStore(tmp_path / "state.db"), LocalDiffAdapter(diff_file),
+        ToolRegistry(), client, config, rules=registry,
+    ).run("local://budget-race")
+    assert client.rule_calls == 1
+    assert result.cost_usd <= config.budget_usd
+    assert "budget_exceeded" in result.degradations
 
 
 def test_pipeline_calls_llm_once_for_multiple_go_rules(tmp_path):

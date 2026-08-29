@@ -1,4 +1,4 @@
-from review_agent.graph_pipeline import build_review_graph
+from review_agent.graph_pipeline import NODE_NAMES, build_review_graph
 
 
 class _Pipeline:
@@ -12,4 +12,5 @@ def test_graph_declares_explicit_review_nodes_and_preserves_pipeline_result():
         "fetch", "sanitize", "tools", "load_rules", "split_languages",
         "review_mdr_batches", "render",
     )
+    assert adapter.graph is not None
     assert adapter.run("run-1") == "run-1"

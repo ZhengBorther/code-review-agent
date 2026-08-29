@@ -6,7 +6,7 @@
 
 **Architecture:** Add Pydantic schemas around the existing MDR batch parser, introduce a LangGraph-backed orchestration adapter with a fallback to the existing pipeline, and provide an async batch scheduler whose each task reserves budget through SQLite before calling the provider. Add opt-in repository profiles and offline eval fixtures without changing the core stage contracts.
 
-**Tech Stack:** Python 3.11+, existing `sqlite3`/`asyncio`/`tomllib`/`pytest`, `pydantic>=2,<3`, optional `langgraph>=0.2,<2`.
+**Tech Stack:** Python 3.11+, existing `sqlite3`/`asyncio`/`tomllib`/`pytest`, `pydantic>=2,<3`, `langgraph>=0.2,<2`.
 
 ## Global Constraints
 

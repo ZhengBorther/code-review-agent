@@ -239,6 +239,28 @@ skip_globs = ["vendor/**"]
     assert "GO-PROFILE-001" in output.read_text(encoding="utf-8")
 
 
+def test_profile_language_allowlist_filters_other_rules(tmp_path):
+    diff_file = tmp_path / "change.diff"
+    _write_go_diff(diff_file)
+    rules_dir = tmp_path / "rules"
+    _write_rule(rules_dir, "GO-PROFILE-001")
+    profile_file = tmp_path / "profiles.toml"
+    profile_file.write_text(
+        """[[profiles]]
+name = "python-only"
+repo = "REPO_PATH"
+rules_dirs = ["rules"]
+enabled_languages = ["python"]
+""".replace("REPO_PATH", str(tmp_path / "repo")), encoding="utf-8")
+    output = tmp_path / "report.md"
+    assert main([
+        "review", "--diff-file", str(diff_file), "--offline",
+        "--profile", str(profile_file), "--repo-path", str(tmp_path / "repo"),
+        "--output", str(output), "--state-dir", str(tmp_path / "state"),
+    ]) == 0
+    assert "GO-PROFILE-001" not in output.read_text(encoding="utf-8")
+
+
 def test_cli_uses_unified_review_and_llm_config(tmp_path):
     diff_file = tmp_path / "change.diff"
     _write_go_diff(diff_file)

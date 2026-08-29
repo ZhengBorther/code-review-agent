@@ -182,6 +182,15 @@ def _run_review(args: argparse.Namespace) -> int:
         rules = RuleRegistry.from_snapshot(snapshot_config, persisted_config.get("rules_snapshot", []))
     else:
         rules = _load_rule_registry(args.config, profile_rules_dirs)
+    if profile and profile.enabled_languages:
+        # Profile language allowlist overrides the generic rules section for
+        # this repository while preserving the loaded MDR snapshot.
+        profile_rules_config = RulesConfig(
+            directories=tuple(getattr(rules.config, "directories", ())),
+            enabled_languages=profile.enabled_languages,
+            disabled_rules=tuple(getattr(rules.config, "disabled_rules", ())),
+        )
+        rules = RuleRegistry.from_snapshot(profile_rules_config, rules.snapshot())
     config = RunConfig(
         url=url,
         budget_usd=app_config.budget_usd,

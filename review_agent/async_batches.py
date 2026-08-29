@@ -39,9 +39,11 @@ async def run_batches_async(
     async def run_one(batch: Any) -> tuple[Any | None, str | None]:
         async with semaphore:
             try:
-                value = reviewer(batch)
-                if inspect.isawaitable(value):
-                    value = await value
+                if inspect.iscoroutinefunction(reviewer):
+                    value = await reviewer(batch)
+                else:
+                    # 同步 HTTP/SQLite 逻辑必须进入线程，否则会阻塞整个事件循环。
+                    value = await asyncio.to_thread(reviewer, batch)
                 return value, None
             except Exception as exc:  # 保留其他批次结果
                 return None, f"{type(exc).__name__}: {exc}"

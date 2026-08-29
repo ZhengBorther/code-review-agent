@@ -1,7 +1,7 @@
-"""可选的 LangGraph 编排外壳。
+"""LangGraph 编排入口。
 
-SQLite 仍是恢复事实来源；本模块只把固定阶段声明成可观察的图，并在未安装
-LangGraph 时回退到已有 ReviewPipeline，避免把框架变成运行时硬依赖。
+SQLite 仍是恢复事实来源；LangGraph 负责固定阶段的可观察编排，不提供 fallback，
+从而保证所有 CLI 执行都经过同一条状态图路径。
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ NODE_NAMES = (
 
 @dataclass
 class ReviewGraphAdapter:
-    """以统一接口运行 LangGraph 图或现有 Pipeline fallback。"""
+    """通过编译后的 LangGraph 运行 Review Pipeline。"""
 
     pipeline: Any
     graph: Any = None
@@ -33,18 +33,13 @@ class ReviewGraphAdapter:
         return NODE_NAMES
 
     def run(self, url_or_run_id: str) -> Any:
-        if self.graph is None:
-            return self.pipeline.run(url_or_run_id)
         state = self.graph.invoke({"target": url_or_run_id})
         return state["result"]
 
 
 def build_review_graph(pipeline: Any) -> ReviewGraphAdapter:
-    """构建固定阶段图；框架不可用时返回行为等价的 fallback。"""
-    try:
-        from langgraph.graph import END, START, StateGraph
-    except ImportError:
-        return ReviewGraphAdapter(pipeline)
+    """构建唯一的固定阶段图；缺少 LangGraph 时启动即失败。"""
+    from langgraph.graph import END, START, StateGraph
 
     graph_builder = StateGraph(ReviewState)
 

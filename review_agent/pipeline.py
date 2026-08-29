@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+import asyncio
 import time
 from dataclasses import dataclass, replace
 from typing import Any
 from uuid import uuid4
 
 from .budget import BudgetController
+from .async_batches import AsyncBatchConfig, run_batches_async
 from .llm import LLMClient, estimate_tokens
 from .models import ChangeRequest, Finding, RunConfig, TraceRecord
 from .diff_languages import split_diff_by_language
@@ -67,15 +69,27 @@ class ReviewPipeline:
             degradations.append("orphan_reservation_requires_manual_recovery")
         return degradations
 
-    def _run_mdr_rules(self, run_id: str, request: ChangeRequest, sanitized_diff: str, diff_hash: str, config: RunConfig) -> tuple[list[Finding], list[str]]:
+    def _run_mdr_rules(
+        self,
+        run_id: str,
+        request: ChangeRequest,
+        sanitized_diff: str,
+        diff_hash: str,
+        config: RunConfig,
+        *,
+        language_filter: str | None = None,
+        manage_stale: bool = True,
+    ) -> tuple[list[Finding], list[str]]:
         """执行各语言 MDR 批次，同时维护恢复状态和审计关联。"""
         if self.rules is None:
             return [], []
         controller = BudgetController(config)
         controller.spent_usd = float(self.store.get_run(run_id)["cost_usd"])
         findings: list[Finding] = []
-        degradations: list[str] = self._reclaim_orphan_reservations(run_id)
+        degradations: list[str] = self._reclaim_orphan_reservations(run_id) if manage_stale else []
         language_diffs = split_diff_by_language(sanitized_diff, config.profile_skip_globs)
+        if language_filter is not None:
+            language_diffs = tuple(item for item in language_diffs if item.language == language_filter)
         valid_stages: set[str] = set()
         # 先计算本次应存在的阶段，再把已删除的规则或文件标为过期并释放预算。
         for language_diff in language_diffs:
@@ -84,11 +98,37 @@ class ReviewPipeline:
                 continue
             for index, _batch in enumerate(build_rule_batches(language_diff, rules, max(256, config.max_diff_chars))):
                 valid_stages.add(f"rules:{language_diff.language}:{index}")
-        for checkpoint in self.store.list_checkpoints(run_id, "rules:"):
-            stage = checkpoint["stage"]
-            base = stage[:-len(":reservation")] if stage.endswith(":reservation") else stage
-            if base not in valid_stages:
-                self.store.supersede_checkpoint(run_id, stage)
+        if manage_stale:
+            for checkpoint in self.store.list_checkpoints(run_id, "rules:"):
+                stage = checkpoint["stage"]
+                base = stage[:-len(":reservation")] if stage.endswith(":reservation") else stage
+                if base not in valid_stages:
+                    self.store.supersede_checkpoint(run_id, stage)
+
+        # 不同语言拥有不同 checkpoint key，可以安全并发；SQLite reservation
+        # 仍负责跨线程的单 PR 预算原子性。单语言内部保持稳定的批次顺序。
+        if manage_stale and language_filter is None and len(language_diffs) > 1 and config.max_concurrency > 1:
+            languages = tuple(item.language for item in language_diffs)
+
+            def review_language(language: str) -> tuple[list[Finding], list[str]]:
+                return self._run_mdr_rules(
+                    run_id, request, sanitized_diff, diff_hash, config,
+                    language_filter=language, manage_stale=False,
+                )
+
+            scheduled = asyncio.run(run_batches_async(
+                languages,
+                review_language,
+                AsyncBatchConfig(config.max_concurrency),
+            ))
+            for language_findings, language_degradations in scheduled.results:
+                findings.extend(language_findings)
+                degradations.extend(language_degradations)
+            for error in scheduled.errors:
+                self._trace(run_id, kind="mdr_batch", error=error,
+                            metadata={"concurrent_batch_failure": True})
+                degradations.append("mdr_batch_failed")
+            return findings, list(dict.fromkeys(degradations))
 
         for language_diff in language_diffs:
             rules = self.rules.applicable(language_diff.language)

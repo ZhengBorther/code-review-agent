@@ -10,7 +10,7 @@
 - 不接入 `cr-agent` 的 ShellTool，不执行用户仓库代码或命令。
 - 不替换现有 SQLite；SQLite 仍是 checkpoint、预算、reservation 和 trace 的事实来源。
 - 将规则输出从手写 JSON 校验增强为 Pydantic schema，并保留未知字段拒绝和 advisory 强制约束。
-- 用 LangGraph（可选依赖）声明固定阶段图；没有 LangGraph 安装时保留现有 Pipeline 作为兼容 fallback。
+- 用 LangGraph 声明唯一固定阶段图；LangGraph 是正式依赖，不保留第二套 fallback。
 - 独立语言批次可以异步调度，但每个批次必须先通过 SQLite 原子预算 reservation。
 - 增加按仓库路径选择规则目录、语言白名单和文件黑名单的 profile 配置。
 - 增加离线 eval case，验证 MDR 命中、未知输出拒绝和规则变更后的 checkpoint 失效。
@@ -96,5 +96,5 @@ eval 不访问网络、不执行 fixture 仓库代码，验证批次调用次数
 
 - Pydantic/JSON 解析失败：记录 batch trace，当前批次不产出 finding。
 - 预算不足：按现有 fallback、截断、禁用顺序处理；不会超预算崩溃。
-- LangGraph 不可用：使用当前 `ReviewPipeline` fallback，不影响 CLI。
+- LangGraph 不可用：启动失败并提示安装项目依赖，避免执行路径分叉。
 - Profile 或规则配置错误：在启动阶段报告具体文件和字段并退出。

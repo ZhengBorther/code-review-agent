@@ -87,7 +87,9 @@ python3 -m review_agent review \
 
 ## 编排与离线评测
 
-项目提供可选的 LangGraph 编排外壳：安装 `code-review-agent[graph]` 后，CLI 会以固定节点图组织 `fetch`、`sanitize`、`tools`、`load_rules`、`split_languages`、`review_mdr_batches` 和 `render`；未安装时自动使用兼容 fallback。SQLite 仍是 checkpoint、预算 reservation 和 trace 的事实来源。
+LangGraph 是正式运行依赖。CLI 统一以固定节点图组织 `fetch`、`sanitize`、`tools`、`load_rules`、`split_languages`、`review_mdr_batches` 和 `render`，缺少 LangGraph 时启动失败，不再维护第二套 fallback 路径。SQLite 仍是 checkpoint、预算 reservation 和 trace 的事实来源。
+
+不同语言的 MDR 批次按 `[review].max_concurrency` 受限并发执行；同步 HTTP 调用放入工作线程，避免阻塞事件循环。每个批次在调用模型前仍必须通过 SQLite 原子预算 reservation，因此并发不会突破单个 PR/MR 的 `budget_usd`。
 
 离线规则评测示例位于 `eval/cases/`，只使用 fixture diff 和注入的模型响应，不访问网络，也不执行规则或仓库代码。
 
