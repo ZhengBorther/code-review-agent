@@ -1,5 +1,6 @@
 [review]
 mode = "mdr_only"
+max_concurrency = 2
 budget_usd = 10.0
 max_diff_chars = 12000
 completion_tokens = 512
@@ -21,7 +22,10 @@ qwen-plus = 0.003
 qwen-turbo = 0.001
 
 [github]
-# token = "replace-with-your-github-token"
+token = "replace-with-your-github-token"
+
+[gitlab]
+token = "replace-with-your-github-token"
 
 [rules]
 enabled_languages = ["go"]
