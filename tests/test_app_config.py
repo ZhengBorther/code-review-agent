@@ -1,6 +1,7 @@
 import pytest
 
 from review_agent.config import load_app_config
+from review_agent.models import RunConfig
 
 
 def test_load_app_config_reads_review_llm_and_pricing_sections(tmp_path):
@@ -50,9 +51,22 @@ def test_environment_overrides_file(monkeypatch, tmp_path):
     assert load_app_config(config_file).model == "from-env"
 
 
-def test_api_key_in_toml_is_rejected(monkeypatch, tmp_path):
+def test_credentials_can_be_loaded_from_toml_without_being_run_config(tmp_path):
     config_file = tmp_path / "review-agent.toml"
-    config_file.write_text('[llm]\napi_key = "secret-in-file"\n', encoding="utf-8")
-    monkeypatch.setenv("ONEAPI_API_KEY", "secret-from-env")
-    with pytest.raises(ValueError, match="api_key"):
-        load_app_config(config_file)
+    config_file.write_text(
+        """[llm]
+api_key = "oneapi-secret"
+
+[github]
+token = "github-secret"
+
+[gitlab]
+token = "gitlab-secret"
+""",
+        encoding="utf-8",
+    )
+    config = load_app_config(config_file, environ={})
+    assert config.llm_api_key == "oneapi-secret"
+    assert config.github_token == "github-secret"
+    assert config.gitlab_token == "gitlab-secret"
+    assert "llm_api_key" not in RunConfig(url="x").to_dict()

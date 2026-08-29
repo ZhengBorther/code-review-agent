@@ -10,10 +10,18 @@ base_url = "https://oneapi.example/v1"
 model = "qwen-plus"
 fallback_model = "qwen-turbo"
 timeout_seconds = 30
+# Optional: store credentials here only in a chmod 600 local copy.
+# api_key = "replace-with-your-oneapi-key"
 
 [llm.pricing]
 qwen-plus = 0.003
 qwen-turbo = 0.001
+
+[github]
+# token = "replace-with-your-github-token"
+
+[gitlab]
+# token = "replace-with-your-gitlab-token"
 
 [rules]
 enabled_languages = ["go"]

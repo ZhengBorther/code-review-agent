@@ -79,6 +79,8 @@ def _parser() -> argparse.ArgumentParser:
     review.add_argument("--fallback-model", default=None, help="fallback model name")
     review.add_argument("--oneapi-base-url", default=None, help="OpenAI-compatible API base URL")
     review.add_argument("--oneapi-api-key", default=None, help="OneAPI API key (prefer ONEAPI_API_KEY)")
+    review.add_argument("--github-token", default=None, help="GitHub token (prefer GITHUB_TOKEN)")
+    review.add_argument("--gitlab-token", default=None, help="GitLab token (prefer GITLAB_TOKEN)")
     review.add_argument("--offline", action="store_true", default=None, help="use deterministic local model; never access network")
     review.add_argument("--gitlab-host", action="append", default=[], help="explicitly authorize a self-hosted GitLab hostname; repeatable")
     return parser
@@ -99,6 +101,8 @@ def _run_review(args: argparse.Namespace) -> int:
             "state_dir": str(args.state_dir) if args.state_dir is not None else None,
             "llm_base_url": args.oneapi_base_url,
             "llm_api_key": args.oneapi_api_key,
+            "github_token": args.github_token,
+            "gitlab_token": args.gitlab_token,
             "offline": args.offline,
             "gitlab_allowed_hosts": tuple(args.gitlab_host) if args.gitlab_host else None,
         },
@@ -120,9 +124,9 @@ def _run_review(args: argparse.Namespace) -> int:
         else:
             host = (urlparse(url).hostname or "").lower()
             if host == "github.com" or host.endswith(".github.com"):
-                adapter = GitHubAdapter(token=os.getenv("GITHUB_TOKEN"))
+                adapter = GitHubAdapter(token=app_config.github_token)
             elif _gitlab_host_allowed(host, list(app_config.gitlab_allowed_hosts), persisted_config):
-                adapter = GitLabAdapter(token=os.getenv("GITLAB_TOKEN"))
+                adapter = GitLabAdapter(token=app_config.gitlab_token)
             else:
                 raise ValueError("unsupported persisted change-request URL; expected GitHub or GitLab PR/MR")
     elif args.diff_file is not None:
@@ -135,9 +139,9 @@ def _run_review(args: argparse.Namespace) -> int:
     else:
         host = (urlparse(args.url).hostname or "").lower()
         if host == "github.com" or host.endswith(".github.com"):
-            adapter = GitHubAdapter(token=os.getenv("GITHUB_TOKEN"))
+            adapter = GitHubAdapter(token=app_config.github_token)
         elif _gitlab_host_allowed(host, list(app_config.gitlab_allowed_hosts), None):
-            adapter = GitLabAdapter(token=os.getenv("GITLAB_TOKEN"))
+            adapter = GitLabAdapter(token=app_config.gitlab_token)
         else:
             raise ValueError("unsupported change-request URL; expected GitHub or GitLab PR/MR")
 

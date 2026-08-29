@@ -18,9 +18,10 @@ python3 -m review_agent review \
 
 ## OneAPI
 
-OneAPI 使用 OpenAI Chat Completions 兼容协议。模型、fallback、超时和费率可写在统一 TOML 配置中；API key 不写入配置文件，只通过环境变量注入：
+OneAPI 使用 OpenAI Chat Completions 兼容协议。模型、fallback、超时、费率和 API key 都可写在统一 TOML 配置中；生产环境更推荐通过环境变量注入：
 
 ```bash
+# Credentials may come from this config file or environment variables.
 export ONEAPI_API_KEY=your-key
 python3 -m review_agent review \
   --diff-file change.diff \
@@ -29,7 +30,13 @@ python3 -m review_agent review \
 
 配置文件可同时管理 `[review]`、`[llm]`、`[llm.pricing]` 和 `[rules]`。命令行参数覆盖 TOML，环境变量覆盖 TOML；预算不足时会依次尝试降级模型、截断上下文，最后只保留规则工具结果。
 
-配置优先级为：代码默认值 < TOML 文件 < 环境变量 < CLI 参数。API key 只接受 `ONEAPI_API_KEY` 或 `OPENAI_API_KEY`，避免密钥落盘。
+配置优先级为：代码默认值 < TOML 文件 < 环境变量 < CLI 参数。OneAPI、GitHub、GitLab token 都支持放入 TOML，但不写入 SQLite 运行快照、checkpoint 或 trace。包含 token 的配置文件必须限制为当前用户可读：
+
+```bash
+chmod 600 review-agent.toml
+```
+
+也可以继续使用 `ONEAPI_API_KEY`、`GITHUB_TOKEN` 和 `GITLAB_TOKEN` 环境变量；环境变量优先于 TOML，CLI 的 `--oneapi-api-key`、`--github-token` 和 `--gitlab-token` 优先级最高。
 
 ## GitHub / GitLab
 

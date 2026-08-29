@@ -29,6 +29,8 @@ class AppConfig:
     state_dir: str = ".review-state"
     llm_base_url: str | None = None
     llm_api_key: str | None = None
+    github_token: str | None = None
+    gitlab_token: str | None = None
     llm_timeout_seconds: float = 30.0
     model_pricing: dict[str, float] = field(default_factory=dict)
     offline: bool = False
@@ -59,11 +61,11 @@ def load_app_config(
             data = tomllib.load(stream)
     review = _table(data, "review")
     llm = _table(data, "llm")
+    github = _table(data, "github")
+    gitlab = _table(data, "gitlab")
     pricing_data = llm.get("pricing", {})
     if not isinstance(pricing_data, dict):
         raise ValueError("[llm.pricing] must be a table")
-    if "api_key" in llm:
-        raise ValueError("llm.api_key must not be stored in TOML; use ONEAPI_API_KEY")
 
     def value(file_section: dict[str, Any], file_key: str, env_key: str, default: Any) -> Any:
         if env_key in env:
@@ -86,7 +88,9 @@ def load_app_config(
         "output_path": str(value(review, "output", "REVIEW_OUTPUT", "review.md")),
         "state_dir": str(value(review, "state_dir", "REVIEW_STATE_DIR", ".review-state")),
         "llm_base_url": value(llm, "base_url", "ONEAPI_BASE_URL", None),
-        "llm_api_key": env.get("ONEAPI_API_KEY") or env.get("OPENAI_API_KEY"),
+        "llm_api_key": env.get("ONEAPI_API_KEY") or env.get("OPENAI_API_KEY") or llm.get("api_key"),
+        "github_token": env.get("GITHUB_TOKEN") or github.get("token"),
+        "gitlab_token": env.get("GITLAB_TOKEN") or gitlab.get("token"),
         "llm_timeout_seconds": float(value(llm, "timeout_seconds", "ONEAPI_TIMEOUT_SECONDS", 30.0)),
         "offline": boolean(value(review, "offline", "REVIEW_OFFLINE", False), "review.offline"),
     }
@@ -110,6 +114,9 @@ def load_app_config(
     for key, item in (overrides or {}).items():
         if item is not None:
             resolved[key] = item
+    for key in ("llm_api_key", "github_token", "gitlab_token"):
+        if resolved[key] is not None and not isinstance(resolved[key], str):
+            raise ValueError(f"{key} must be a string")
     if any(rate <= 0 for rate in resolved["model_pricing"].values()):
         raise ValueError("llm pricing rates must be positive")
     if resolved["budget_usd"] < 0 or resolved["max_diff_chars"] <= 0 or resolved["completion_tokens"] <= 0:

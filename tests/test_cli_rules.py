@@ -193,6 +193,27 @@ def test_cli_accepts_explicit_self_hosted_gitlab_allowlist(tmp_path, monkeypatch
                  "--output", str(output)]) == 0
 
 
+def test_cli_passes_provider_token_from_toml_to_adapter(tmp_path, monkeypatch):
+    seen = {}
+
+    class StubGitHubAdapter:
+        def __init__(self, token=None):
+            seen["token"] = token
+
+        def fetch(self, url):
+            return ChangeRequest(url=url, diff=GO_DIFF, source="github")
+
+    monkeypatch.setattr("review_agent.cli.GitHubAdapter", StubGitHubAdapter)
+    config_file = tmp_path / "review-agent.toml"
+    config_file.write_text('[review]\noffline = true\n[github]\ntoken = "github-from-file"\n', encoding="utf-8")
+    assert main([
+        "review", "https://github.com/acme/project/pull/7",
+        "--config", str(config_file), "--state-dir", str(tmp_path / "state"),
+        "--output", str(tmp_path / "report.md"),
+    ]) == 0
+    assert seen["token"] == "github-from-file"
+
+
 def test_cli_uses_unified_review_and_llm_config(tmp_path):
     diff_file = tmp_path / "change.diff"
     _write_go_diff(diff_file)
