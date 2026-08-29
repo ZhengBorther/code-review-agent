@@ -145,6 +145,16 @@ class StateStore:
             )
             return cursor.rowcount > 0
 
+    def assert_run_lease(self, run_id: str, owner_token: str) -> None:
+        """在写入结果前验证 fencing owner，失去 lease 的 worker 不得落盘。"""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT owner_token, expires_at FROM run_leases WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+        if row is None or row["owner_token"] != owner_token or datetime.fromisoformat(row["expires_at"]) <= datetime.now(timezone.utc):
+            raise RuntimeError(f"run {run_id} lease is no longer owned")
+
     def get_checkpoint(self, run_id: str, stage: str) -> dict[str, Any] | None:
         """只返回成功阶段的数据；失败或过期记录仍可被审计查询。"""
         record = self.get_checkpoint_record(run_id, stage)

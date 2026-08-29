@@ -51,9 +51,21 @@ class ReviewPipeline:
         self._lease_token: str | None = None
 
     def _trace(self, run_id: str, *, kind: str, input_hash: str = "", prompt: str = "", response: str = "", model: str = "", tool_name: str = "", prompt_tokens: int = 0, completion_tokens: int = 0, cost_usd: float = 0.0, duration_ms: int = 0, error: str = "", parent_trace_id: str = "", rule_id: str = "", ruleset_hash: str = "", metadata: dict[str, Any] | None = None) -> str:
+        if self._lease_token:
+            self.store.assert_run_lease(run_id, self._lease_token)
         trace_id = f"trace-{uuid4().hex}"
         self.store.save_trace(TraceRecord(trace_id=trace_id, run_id=run_id, kind=kind, input_hash=input_hash, prompt=redact_secrets(prompt).text, response=redact_secrets(response).text, model=model, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, cost_usd=cost_usd, duration_ms=duration_ms, tool_name=tool_name, error=redact_secrets(error).text, parent_trace_id=parent_trace_id, rule_id=rule_id, ruleset_hash=ruleset_hash, metadata=metadata or {}))
         return trace_id
+
+    def _save_checkpoint(self, run_id: str, stage: str, payload: dict[str, Any], **kwargs: Any) -> None:
+        if self._lease_token:
+            self.store.assert_run_lease(run_id, self._lease_token)
+        self.store.save_checkpoint(run_id, stage, payload, **kwargs)
+
+    def _update_run(self, run_id: str, **kwargs: Any) -> None:
+        if self._lease_token:
+            self.store.assert_run_lease(run_id, self._lease_token)
+        self.store.update_run(run_id, **kwargs)
 
     def _reclaim_orphan_reservations(self, run_id: str) -> list[str]:
         # 没有关联 checkpoint 的 reservation 无法确认是否仍由工作进程使用，
@@ -132,7 +144,10 @@ class ReviewPipeline:
             for error in scheduled.errors:
                 self._trace(run_id, kind="mdr_batch", error=error,
                             metadata={"concurrent_batch_failure": True,
-                                      "batch_identity": error.split(":", 1)[0]})
+                                      "batch_identity": next(
+                                          (part for part in error.split() if part.startswith("language=")),
+                                          "unknown",
+                                      )})
                 degradations.append("mdr_batch_failed")
             if scheduled.errors:
                 # 成功兄弟 checkpoint 已持久化；让 run 失败，恢复时只重试失败批次。
@@ -171,7 +186,7 @@ class ReviewPipeline:
                 if reservation_state and reservation_state.get("status") in ("pending", "in_flight", "completed") and all(reservation_state.get(key) == value for key, value in expected.items()):
                     if reservation_state.get("status") == "completed" and reservation_state.get("findings") is not None:
                         recovered_findings = [Finding.from_dict(item) for item in reservation_state.get("findings", [])]
-                        self.store.save_checkpoint(run_id, checkpoint_key, {**expected, "findings": [item.to_dict() for item in recovered_findings], "batch_trace_id": reservation_state.get("batch_trace_id", ""), "finding_trace_ids": reservation_state.get("finding_trace_ids", [])})
+                        self._save_checkpoint(run_id, checkpoint_key, {**expected, "findings": [item.to_dict() for item in recovered_findings], "batch_trace_id": reservation_state.get("batch_trace_id", ""), "finding_trace_ids": reservation_state.get("finding_trace_ids", [])})
                         findings.extend(recovered_findings)
                         continue
                     token = reservation_state.get("token")
@@ -205,15 +220,15 @@ class ReviewPipeline:
                                     rule_id=finding.rule_id, metadata={"batch_trace_id": batch_trace_id, "recovery": True})
                                 recovered_findings.append(replace(finding, trace_id=finding_trace_id, confidence="advisory"))
                                 finding_trace_ids.append(finding_trace_id)
-                            self.store.save_checkpoint(run_id, reservation_key, {**reservation_state, **expected, "status": "completed", "findings": [item.to_dict() for item in recovered_findings], "batch_trace_id": batch_trace_id, "finding_trace_ids": finding_trace_ids})
-                            self.store.save_checkpoint(run_id, checkpoint_key, {**expected, "findings": [item.to_dict() for item in recovered_findings], "batch_trace_id": batch_trace_id, "finding_trace_ids": finding_trace_ids})
+                            self._save_checkpoint(run_id, reservation_key, {**reservation_state, **expected, "status": "completed", "findings": [item.to_dict() for item in recovered_findings], "batch_trace_id": batch_trace_id, "finding_trace_ids": finding_trace_ids})
+                            self._save_checkpoint(run_id, checkpoint_key, {**expected, "findings": [item.to_dict() for item in recovered_findings], "batch_trace_id": batch_trace_id, "finding_trace_ids": finding_trace_ids})
                             findings.extend(recovered_findings)
                             continue
                     had_inflight = bool(db_reservation and db_reservation.get("status") == "in_flight")
                     if had_inflight:
                         self.store.settle_reservation(run_id, token, 0.0, owner_token=self._lease_token)
                     elif reservation_state.get("status") == "pending" and db_reservation is None:
-                        self.store.save_checkpoint(run_id, reservation_key, {**reservation_state, **expected, "status": "recovered"})
+                        self._save_checkpoint(run_id, reservation_key, {**reservation_state, **expected, "status": "recovered"})
                         reservation_state = None
                     else:
                         db_reservation = None
@@ -224,8 +239,8 @@ class ReviewPipeline:
                     else:
                         trace_id = self._trace(run_id, kind="mdr_batch", input_hash=batch.diff_hash, model=reservation_state.get("model", ""), ruleset_hash=ruleset_hash, error="previous MDR reservation was unresolved; skipped duplicate call", metadata={"rule_ids": [rule.id for rule in batch.rules], "recovery": True, "rejections": ["inflight_reservation_recovered"]})
                         degradations.append("inflight_reservation_recovered")
-                        self.store.save_checkpoint(run_id, checkpoint_key, {**expected, "findings": [], "batch_trace_id": trace_id, "finding_trace_ids": []})
-                        self.store.save_checkpoint(run_id, reservation_key, {**reservation_state, **expected, "status": "recovered"})
+                        self._save_checkpoint(run_id, checkpoint_key, {**expected, "findings": [], "batch_trace_id": trace_id, "finding_trace_ids": []})
+                        self._save_checkpoint(run_id, reservation_key, {**reservation_state, **expected, "status": "recovered"})
                         continue
 
                 prompt = build_rule_prompt(batch)
@@ -235,19 +250,19 @@ class ReviewPipeline:
                     degradations.append(decision.reason)
                 if not decision.allow_llm or not decision.model:
                     trace_id = self._trace(run_id, kind="mdr_batch", input_hash=batch.diff_hash, prompt=prompt, model=decision.model or "", ruleset_hash=ruleset_hash, error=decision.reason or "llm_disabled", metadata={"rule_ids": [rule.id for rule in batch.rules], "rejections": [decision.reason or "llm_disabled"]})
-                    self.store.save_checkpoint(run_id, checkpoint_key, {**expected, "findings": [], "batch_trace_id": trace_id, "finding_trace_ids": []})
+                    self._save_checkpoint(run_id, checkpoint_key, {**expected, "findings": [], "batch_trace_id": trace_id, "finding_trace_ids": []})
                     continue
                 reservation = controller.reserve(decision.model, decision.estimated_tokens or estimate_tokens(prompt))
                 # 先写 pending 再创建数据库 reservation；任一边界崩溃后都能确定性对账。
-                self.store.save_checkpoint(run_id, reservation_key, {**expected, "status": "pending", "token": reservation.token if reservation else "", "reserved_usd": reservation.reserved_usd if reservation else 0.0, "model": decision.model})
+                self._save_checkpoint(run_id, reservation_key, {**expected, "status": "pending", "token": reservation.token if reservation else "", "reserved_usd": reservation.reserved_usd if reservation else 0.0, "model": decision.model})
                 if reservation is None or not self.store.reserve_budget(run_id, reservation.token, reservation.reserved_usd, self._lease_token):
                     if reservation is not None:
                         controller.commit(reservation, 0.0)
                     degradations.append("budget_exceeded")
                     trace_id = self._trace(run_id, kind="mdr_batch", input_hash=batch.diff_hash, prompt=prompt, model=decision.model, ruleset_hash=ruleset_hash, error="budget_exceeded", metadata={"rule_ids": [rule.id for rule in batch.rules], "rejections": ["budget_exceeded"]})
-                    self.store.save_checkpoint(run_id, checkpoint_key, {**expected, "findings": [], "batch_trace_id": trace_id, "finding_trace_ids": []})
+                    self._save_checkpoint(run_id, checkpoint_key, {**expected, "findings": [], "batch_trace_id": trace_id, "finding_trace_ids": []})
                     continue
-                self.store.save_checkpoint(run_id, reservation_key, {**expected, "status": "in_flight", "token": reservation.token, "reserved_usd": reservation.reserved_usd, "model": decision.model})
+                self._save_checkpoint(run_id, reservation_key, {**expected, "status": "in_flight", "token": reservation.token, "reserved_usd": reservation.reserved_usd, "model": decision.model})
                 started = time.monotonic()
                 try:
                     # 模型只接收已脱敏且受长度限制的 prompt；供应商回复一律按不可信 JSON 解析。
@@ -277,15 +292,15 @@ class ReviewPipeline:
                             finding_trace_ids.append(finding_trace_id)
                     else:
                         degradations.append("provider_cost_exceeded")
-                    self.store.save_checkpoint(run_id, reservation_key, {**expected, "status": "completed" if accepted else "rejected", "token": reservation.token, "reserved_usd": reservation.reserved_usd, "model": decision.model, "findings": [item.to_dict() for item in batch_findings], "batch_trace_id": batch_trace_id, "finding_trace_ids": finding_trace_ids})
-                    self.store.save_checkpoint(run_id, checkpoint_key, {**expected, "findings": [item.to_dict() for item in batch_findings], "batch_trace_id": batch_trace_id, "finding_trace_ids": finding_trace_ids})
+                    self._save_checkpoint(run_id, reservation_key, {**expected, "status": "completed" if accepted else "rejected", "token": reservation.token, "reserved_usd": reservation.reserved_usd, "model": decision.model, "findings": [item.to_dict() for item in batch_findings], "batch_trace_id": batch_trace_id, "finding_trace_ids": finding_trace_ids})
+                    self._save_checkpoint(run_id, checkpoint_key, {**expected, "findings": [item.to_dict() for item in batch_findings], "batch_trace_id": batch_trace_id, "finding_trace_ids": finding_trace_ids})
                     findings.extend(batch_findings)
                 except Exception as exc:
                     db_reservation = self.store.get_reservation(run_id, reservation.token)
                     if db_reservation and db_reservation.get("status") == "completed":
                         # provider 已完成且成本已结算，仅后续落盘失败；保留 completed
                         # 让恢复逻辑从 result_json 重建，绝不能重新发请求。
-                        self.store.save_checkpoint(
+                        self._save_checkpoint(
                             run_id, reservation_key,
                             {**expected, "status": "completed", "token": reservation.token,
                              "reserved_usd": reservation.reserved_usd, "model": decision.model},
@@ -295,7 +310,7 @@ class ReviewPipeline:
                         self.store.settle_reservation(run_id, reservation.token, 0.0, owner_token=self._lease_token)
                         # 已明确收到 provider 异常时允许恢复重试；只有进程突然中断
                         # 留下的 in_flight 状态才按未知结果保守处理。
-                        self.store.save_checkpoint(
+                        self._save_checkpoint(
                             run_id,
                             reservation_key,
                             {**expected, "status": "failed", "token": reservation.token,
@@ -307,9 +322,9 @@ class ReviewPipeline:
         return findings, degradations
 
     def _fail(self, run_id: str, stage: str, exc: Exception) -> None:
-        self.store.save_checkpoint(run_id, stage, {"error": str(exc)}, status="failed")
+        self._save_checkpoint(run_id, stage, {"error": str(exc)}, status="failed")
         self._trace(run_id, kind="stage_error", error=f"{stage}: {exc}")
-        self.store.update_run(run_id, status="failed")
+        self._update_run(run_id, status="failed")
 
     def run(self, url_or_run_id: str) -> ReviewResult:
         """按 ID 恢复已有 run，或创建新 run，并只执行缺失阶段。"""
@@ -345,7 +360,7 @@ class ReviewPipeline:
                 current_stage = "fetch"
                 request = self.adapter.fetch(config.url)
                 fetch = {"request": request.to_dict(), "diff_hash": _hash(request.diff)}
-                self.store.save_checkpoint(run_id, "fetch", fetch)
+                self._save_checkpoint(run_id, "fetch", fetch)
             request = ChangeRequest.from_dict(fetch["request"])
 
             sanitize = self.store.get_checkpoint(run_id, "sanitize")
@@ -359,7 +374,7 @@ class ReviewPipeline:
                     "diff_hash": fetch.get("diff_hash", _hash(request.diff)),
                     "redactions": [match.__dict__ for match in redacted.matches],
                 }
-                self.store.save_checkpoint(run_id, "sanitize", sanitize)
+                self._save_checkpoint(run_id, "sanitize", sanitize)
             sanitized_request = ChangeRequest.from_dict(sanitize["request"])
             sanitized_diff = sanitize["diff"]
             diff_hash = sanitize.get("diff_hash", _hash(request.diff))
@@ -380,7 +395,7 @@ class ReviewPipeline:
                         failure_recorded = True
                         raise
                 tools_payload = {"findings": [finding.to_dict() for finding in tool_findings]}
-                self.store.save_checkpoint(run_id, "tools", tools_payload)
+                self._save_checkpoint(run_id, "tools", tools_payload)
             tool_findings = [Finding.from_dict(item) for item in tools_payload.get("findings", [])]
 
             current_stage = "review"
@@ -390,7 +405,7 @@ class ReviewPipeline:
             review_payload = self.store.get_checkpoint(run_id, "review")
             if review_payload is None:
                 review_payload = {"findings": [], "degradations": [], "mode": "mdr_only"}
-                self.store.save_checkpoint(run_id, "review", review_payload)
+                self._save_checkpoint(run_id, "review", review_payload)
             llm_findings: list[Finding] = []
             degradations = list(dict.fromkeys(mdr_degradations + list(review_payload.get("degradations", []))))
 
@@ -426,10 +441,10 @@ class ReviewPipeline:
                 current_stage = "render"
                 from .report import render_markdown
                 result.markdown = render_markdown(result)
-                self.store.save_checkpoint(run_id, "render", {"markdown": result.markdown, "input_hash": render_input_hash})
+                self._save_checkpoint(run_id, "render", {"markdown": result.markdown, "input_hash": render_input_hash})
             else:
                 result.markdown = render.get("markdown", "")
-            self.store.update_run(run_id, status="completed")
+            self._update_run(run_id, status="completed")
             return result
         except Exception as exc:
             if not failure_recorded:
