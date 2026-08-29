@@ -83,7 +83,7 @@ def _parser() -> argparse.ArgumentParser:
     review.add_argument("--github-token", default=None, help="GitHub token (prefer GITHUB_TOKEN)")
     review.add_argument("--gitlab-token", default=None, help="GitLab token (prefer GITLAB_TOKEN)")
     review.add_argument("--offline", action="store_true", default=None, help="use deterministic local model; never access network")
-    review.add_argument("--review-mode", choices=("mdr_only", "hybrid", "generic"), default=None, help="review mode: MDR-only by default")
+    review.add_argument("--review-mode", choices=("mdr_only",), default=None, help="review mode; only MDR rules are supported")
     review.add_argument("--gitlab-host", action="append", default=[], help="explicitly authorize a self-hosted GitLab hostname; repeatable")
     return parser
 

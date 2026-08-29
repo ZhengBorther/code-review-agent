@@ -124,8 +124,8 @@ def load_app_config(
         raise ValueError("review budget and token limits must be positive")
     if resolved["llm_timeout_seconds"] <= 0:
         raise ValueError("llm timeout_seconds must be positive")
-    if resolved["review_mode"] not in {"mdr_only", "hybrid", "generic"}:
-        raise ValueError("review.mode must be one of: mdr_only, hybrid, generic")
+    if resolved["review_mode"] != "mdr_only":
+        raise ValueError("review.mode must be mdr_only; free-form generic review is disabled")
     return AppConfig(rules=load_rules_config(path, cli_directories), **resolved)
 
 

@@ -11,7 +11,7 @@ def test_load_app_config_reads_review_llm_and_pricing_sections(tmp_path):
 budget_usd = 10.0
 max_diff_chars = 8000
 completion_tokens = 256
-mode = "hybrid"
+mode = "mdr_only"
 output = "out.md"
 state_dir = ".state"
 
@@ -29,7 +29,7 @@ qwen-turbo = 0.001
     )
     config = load_app_config(config_file)
     assert config.budget_usd == 10.0
-    assert config.review_mode == "hybrid"
+    assert config.review_mode == "mdr_only"
     assert config.model == "qwen-plus"
     assert config.fallback_model == "qwen-turbo"
     assert config.model_pricing == {"qwen-plus": 0.003, "qwen-turbo": 0.001}
@@ -80,6 +80,6 @@ def test_review_mode_defaults_to_mdr_only():
 
 def test_review_mode_rejects_unknown_value(tmp_path):
     config_file = tmp_path / "review-agent.toml"
-    config_file.write_text('[review]\nmode = "creative"\n', encoding="utf-8")
+    config_file.write_text('[review]\nmode = "hybrid"\n', encoding="utf-8")
     with pytest.raises(ValueError, match="review.mode"):
         load_app_config(config_file, environ={})

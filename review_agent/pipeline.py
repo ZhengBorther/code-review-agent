@@ -299,72 +299,14 @@ class ReviewPipeline:
             tool_findings = [Finding.from_dict(item) for item in tools_payload.get("findings", [])]
 
             current_stage = "review"
-            mdr_findings, mdr_degradations = ([], [])
-            if config.review_mode in ("mdr_only", "hybrid"):
-                mdr_findings, mdr_degradations = self._run_mdr_rules(run_id, request, sanitized_diff, diff_hash, config)
-
+            # v1 is intentionally MDR-only: the model is called only from the
+            # rule batches above, never with an unconstrained generic prompt.
+            mdr_findings, mdr_degradations = self._run_mdr_rules(run_id, request, sanitized_diff, diff_hash, config)
             review_payload = self.store.get_checkpoint(run_id, "review")
-            if config.review_mode == "mdr_only":
-                # 严格模式记录空的通用阶段，保持恢复状态完整，同时保证不会发起自由形式请求。
-                if review_payload is None:
-                    review_payload = {"findings": [], "degradations": [], "mode": "mdr_only"}
-                    self.store.save_checkpoint(run_id, "review", review_payload)
-            elif review_payload is None:
-                current_stage = "review"
-                llm_findings: list[Finding] = []
-                degradations: list[str] = []
-                reservation_state = self.store.get_checkpoint(run_id, "review_reservation")
-                if reservation_state and reservation_state.get("status") in ("in_flight", "completed"):
-                    trace_id = self._trace(run_id, kind="llm_recovery", input_hash=diff_hash, model=reservation_state.get("model", ""), error="previous LLM reservation was unresolved; skipped duplicate call")
-                    llm_findings.append(Finding(title="模型审查中断，未重复调用", body="检测到上次调用的持久化 reservation，已跳过可能重复计费的重试。", confidence="advisory", evidence="checkpoint:review_reservation", trace_id=trace_id))
-                    degradations.append("inflight_reservation_recovered")
-                    review_payload = {"findings": [finding.to_dict() for finding in llm_findings], "degradations": degradations}
-                    self.store.save_checkpoint(run_id, "review", review_payload)
-                    self.store.save_checkpoint(run_id, "review_reservation", {**reservation_state, "status": "recovered"})
-                else:
-                    controller = BudgetController(config)
-                    controller.spent_usd = float(self.store.get_run(run_id)["cost_usd"])
-                    bounded_diff = sanitized_diff[: config.max_diff_chars]
-                    prompt = "请审查以下已脱敏的代码变更，指出潜在问题并给出修复建议。\n\n" + bounded_diff
-                    decision = controller.select(config.model, estimate_tokens(prompt), allow_truncate=True)
-                    if decision.reason != "within_budget":
-                        degradations.append(decision.reason)
-                    if decision.allow_llm and decision.model:
-                        reservation = controller.reserve(decision.model, decision.estimated_tokens or estimate_tokens(prompt))
-                        if reservation is None or not self.store.reserve_budget(run_id, reservation.token, reservation.reserved_usd):
-                            decision = replace(decision, model=None, allow_llm=False, reason="budget_exceeded")
-                            degradations.append("budget_exceeded")
-                        else:
-                            self.store.save_checkpoint(run_id, "review_reservation", {"status": "in_flight", "token": reservation.token, "reserved_usd": reservation.reserved_usd, "model": decision.model, "input_hash": diff_hash})
-                            started = time.monotonic()
-                            try:
-                                response = self.llm.review(prompt, decision.model, max_chars=decision.max_chars, max_tokens=decision.max_tokens or config.completion_tokens)
-                                try:
-                                    accepted = controller.commit(reservation, response.cost_usd)
-                                except Exception:
-                                    accepted = False
-                                persisted_accepted = self.store.settle_reservation(run_id, reservation.token, response.cost_usd)
-                                accepted = accepted and persisted_accepted
-                                if accepted:
-                                    trace_id = self._trace(run_id, kind="llm", input_hash=diff_hash, prompt=prompt if decision.max_chars is None else prompt[: decision.max_chars], response=response.text, model=response.model or decision.model, prompt_tokens=response.prompt_tokens, completion_tokens=response.completion_tokens, cost_usd=response.cost_usd, duration_ms=int((time.monotonic() - started) * 1000))
-                                    llm_findings.append(Finding(title="模型审查建议", body=response.text, confidence="advisory", evidence="llm", trace_id=trace_id))
-                                    self.store.save_checkpoint(run_id, "review_reservation", {"status": "completed", "token": reservation.token, "reserved_usd": reservation.reserved_usd, "model": decision.model, "input_hash": diff_hash})
-                                else:
-                                    trace_id = self._trace(run_id, kind="llm", input_hash=diff_hash, prompt=prompt if decision.max_chars is None else prompt[: decision.max_chars], response=response.text, model=response.model or decision.model, prompt_tokens=response.prompt_tokens, completion_tokens=response.completion_tokens, cost_usd=response.cost_usd, duration_ms=int((time.monotonic() - started) * 1000), error="provider_cost_exceeded_budget")
-                                    llm_findings.append(Finding(title="模型审查超出预算", body="模型实际成本超过剩余预算，回复未作为审查建议采纳。", confidence="advisory", evidence="budget:provider_cost_exceeded", trace_id=trace_id))
-                                    degradations.append("provider_cost_exceeded")
-                                    self.store.save_checkpoint(run_id, "review_reservation", {"status": "rejected", "token": reservation.token, "reserved_usd": reservation.reserved_usd, "model": decision.model, "input_hash": diff_hash})
-                            except Exception as exc:
-                                controller.commit(reservation, 0.0)
-                                self.store.settle_reservation(run_id, reservation.token, 0.0)
-                                self._fail(run_id, "review", exc)
-                                failure_recorded = True
-                                raise
-                    else:
-                        degradations.append("llm_disabled" if "llm_disabled" not in degradations else "")
-                    review_payload = {"findings": [finding.to_dict() for finding in llm_findings], "degradations": [item for item in degradations if item]}
-                    self.store.save_checkpoint(run_id, "review", review_payload)
-            llm_findings = [Finding.from_dict(item) for item in review_payload.get("findings", [])]
+            if review_payload is None:
+                review_payload = {"findings": [], "degradations": [], "mode": "mdr_only"}
+                self.store.save_checkpoint(run_id, "review", review_payload)
+            llm_findings: list[Finding] = []
             degradations = list(dict.fromkeys(mdr_degradations + list(review_payload.get("degradations", []))))
 
             findings = tool_findings + mdr_findings + llm_findings
