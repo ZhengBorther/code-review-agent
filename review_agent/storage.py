@@ -97,6 +97,7 @@ class StateStore:
         return run_id
 
     def get_checkpoint(self, run_id: str, stage: str) -> dict[str, Any] | None:
+        """Return only successful stage data; failed/superseded data stays inspectable."""
         record = self.get_checkpoint_record(run_id, stage)
         if record is None or record["status"] != "success":
             return None
@@ -143,6 +144,7 @@ class StateStore:
     def save_checkpoint(
         self, run_id: str, stage: str, payload: dict[str, Any], *, status: str = "success"
     ) -> None:
+        """Atomically upsert JSON stage output so retries remain idempotent."""
         now = _utc_now()
         payload_json = json.dumps(payload, ensure_ascii=True)
         with self._connect() as connection:

@@ -21,6 +21,7 @@ from .tools import ToolRegistry
 
 
 def _gitlab_host_allowed(host: str, cli_hosts: list[str], persisted: dict | None) -> bool:
+    """Allow public GitLab or explicitly named private hosts, never fuzzy matches."""
     normalized = {item.strip().lower() for item in cli_hosts if item.strip()}
     env_hosts = {item.strip().lower() for item in os.getenv("GITLAB_ALLOWED_HOSTS", "").split(",") if item.strip()}
     if persisted:
@@ -29,10 +30,10 @@ def _gitlab_host_allowed(host: str, cli_hosts: list[str], persisted: dict | None
 
 
 def _load_rule_registry(config_path: Path | None, rule_dirs: list[Path] | None, *, snapshot: list[dict] | None = None) -> RuleRegistry:
+    """Load only authorized MDR files, or rebuild the exact persisted snapshot."""
     if snapshot is not None:
         configured = load_rules_config(config_path, rule_dirs)
         return RuleRegistry.from_snapshot(configured, snapshot)
-    """Load explicitly authorized MDR directories into one registry."""
     configured = load_rules_config(config_path, rule_dirs)
     directories = list(configured.directories)
     default_dir = Path("~/.config/code-review-agent/rules.d").expanduser()

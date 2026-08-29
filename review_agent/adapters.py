@@ -11,6 +11,8 @@ from .models import ChangeRequest
 
 
 class ChangeRequestAdapter(Protocol):
+    """Read-only boundary between a provider and the review pipeline."""
+
     def fetch(self, url: str) -> ChangeRequest: ...
 
 
@@ -19,6 +21,7 @@ class LocalDiffAdapter:
         self.diff_path = Path(diff_path)
 
     def fetch(self, url: str) -> ChangeRequest:
+        """Read one explicitly supplied diff; never clones or executes a repo."""
         if not url.startswith("local://"):
             raise ValueError("LocalDiffAdapter only accepts local:// URLs")
         if not self.diff_path.is_file():
@@ -31,6 +34,7 @@ class GitHubAdapter:
         self.token, self.timeout = token, timeout
 
     def fetch(self, url: str) -> ChangeRequest:
+        """Fetch PR metadata first, then fetch the provider's unified diff URL."""
         match = re.match(r"https?://github\.com/([^/]+)/([^/]+)/pull/(\d+)", url)
         if not match:
             raise ValueError("invalid GitHub pull request URL")
@@ -55,6 +59,7 @@ class GitLabAdapter:
         self.token, self.timeout = token, timeout
 
     def fetch(self, url: str) -> ChangeRequest:
+        """Fetch MR metadata and its changes endpoint using the same host allowlist."""
         match = re.match(r"(https?://[^/]+)/(.+)/-/merge_requests/(\d+)", url)
         if not match:
             raise ValueError("invalid GitLab merge request URL")

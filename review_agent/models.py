@@ -23,6 +23,7 @@ class _Serializable:
 
 @dataclass(frozen=True)
 class ChangeRequest(_Serializable):
+    """Provider metadata plus the exact unified diff being reviewed."""
     url: str
     title: str = ""
     author: str = ""
@@ -35,6 +36,7 @@ class ChangeRequest(_Serializable):
 
 @dataclass(frozen=True)
 class Finding(_Serializable):
+    """One actionable or advisory review comment with optional source location."""
     title: str
     body: str
     confidence: Confidence
@@ -53,6 +55,7 @@ class Finding(_Serializable):
 
 @dataclass(frozen=True)
 class TraceRecord(_Serializable):
+    """Auditable record of a tool/model operation; prompt and response are redacted upstream."""
     trace_id: str
     run_id: str
     kind: str
@@ -84,6 +87,7 @@ class LLMResponse(_Serializable):
 
 @dataclass(frozen=True)
 class RunConfig(_Serializable):
+    """Resolved run settings persisted with the run so recovery is deterministic."""
     url: str
     budget_usd: float = 1.0
     model: str = "large"

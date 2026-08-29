@@ -7,10 +7,12 @@ from .security import redact_secrets
 
 
 def _safe(value: str) -> str:
+    """Apply the same deterministic redaction to every rendered free-text field."""
     return redact_secrets(value).text
 
 
 def render_markdown(result: ReviewResult) -> str:
+    """Render findings, budget state, and trace evidence without exposing secrets."""
     high = [item for item in result.findings if item.confidence == "high"]
     advisory = [item for item in result.findings if item.confidence == "advisory"]
     lines = [

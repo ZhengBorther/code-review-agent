@@ -16,6 +16,8 @@ MODEL_COST_PER_1K = {"large": 0.03, "small": 0.01}
 
 
 class LLMClient(Protocol):
+    """Minimal provider contract used by generic and MDR review stages."""
+
     def review(self, prompt: str, model: str, *, max_chars: int | None = None, max_tokens: int | None = None) -> LLMResponse: ...
 
 
@@ -31,6 +33,8 @@ def estimate_tokens(text: str) -> int:
 
 
 class OpenAICompatibleClient:
+    """OpenAI Chat Completions client for OneAPI and compatible gateways."""
+
     def __init__(self, base_url: str, api_key: str, timeout: float = 30.0,
                  pricing: dict[str, float] | None = None):
         self.base_url = base_url.rstrip("/")
@@ -39,6 +43,7 @@ class OpenAICompatibleClient:
         self.pricing = pricing or MODEL_COST_PER_1K
 
     def review(self, prompt: str, model: str, *, max_chars: int | None = None, max_tokens: int | None = None) -> LLMResponse:
+        """Send only the bounded prompt and normalize provider usage into LLMResponse."""
         if max_chars is not None:
             prompt = prompt[:max_chars]
         endpoint = self.base_url if self.base_url.endswith("/chat/completions") else self.base_url + "/chat/completions"
@@ -78,6 +83,8 @@ class OpenAICompatibleClient:
 
 
 class DeterministicClient:
+    """Offline client used for reproducible tests and secret-safe demonstrations."""
+
     def review(self, prompt: str, model: str, *, max_chars: int | None = None, max_tokens: int | None = None) -> LLMResponse:
         if max_chars is not None:
             prompt = prompt[:max_chars]

@@ -69,6 +69,7 @@ class ReviewPipeline:
         return degradations
 
     def _run_mdr_rules(self, run_id: str, request: ChangeRequest, sanitized_diff: str, diff_hash: str, config: RunConfig) -> tuple[list[Finding], list[str]]:
+        """Run each language's MDR batches while preserving recovery and audit links."""
         if self.rules is None:
             return [], []
         controller = BudgetController(config)
@@ -249,6 +250,7 @@ class ReviewPipeline:
         self.store.update_run(run_id, status="failed")
 
     def run(self, url_or_run_id: str) -> ReviewResult:
+        """Resume a run by ID or create one, then execute only missing stages."""
         try:
             run = self.store.get_run(url_or_run_id)
             run_id = url_or_run_id

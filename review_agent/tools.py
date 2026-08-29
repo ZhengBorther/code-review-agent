@@ -26,10 +26,13 @@ class ToolSpec:
 
 
 class ToolRegistry:
+    """In-process registry; runners receive sanitized data and never shell commands."""
+
     def __init__(self) -> None:
         self.specs: list[ToolSpec] = []
 
     def register(self, spec: ToolSpec) -> None:
+        """Add one uniquely named declarative tool to the execution list."""
         if spec.confidence not in ("high", "advisory"):
             raise ValueError("confidence must be 'high' or 'advisory'")
         if any(existing.name == spec.name for existing in self.specs):
@@ -37,6 +40,7 @@ class ToolRegistry:
         self.specs.append(spec)
 
     def run_all(self, change_request: ChangeRequest, sanitized_diff: str) -> list[Finding]:
+        """Run registered tools against a second sanitized copy of the change."""
         findings: list[Finding] = []
         sanitized_diff = redact_secrets(sanitized_diff).text
         sanitized_request = replace(change_request, diff=sanitized_diff)

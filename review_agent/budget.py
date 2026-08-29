@@ -26,6 +26,8 @@ class Reservation:
 
 
 class BudgetController:
+    """Apply the model fallback/truncation policy and track in-process spend."""
+
     def __init__(self, config: RunConfig, pricing: dict[str, float] | None = None):
         self.config = config
         self.pricing = pricing if pricing is not None else (config.model_pricing or MODEL_COST_PER_1K)
@@ -36,6 +38,7 @@ class BudgetController:
         self._reservations: dict[str, float] = {}
 
     def estimate_cost(self, model: str, tokens: int) -> float:
+        """Estimate blended prompt+completion cost in USD for 1K-token pricing."""
         return tokens / 1000 * self.pricing.get(model, self.pricing.get("small", 0.01))
 
     def reserve(self, model: str, estimated_tokens: int) -> Reservation | None:
@@ -49,6 +52,7 @@ class BudgetController:
         return token
 
     def commit(self, token: Reservation | str | None, actual_cost_usd: float) -> bool:
+        """Close one reservation and reject a response that would exceed budget."""
         token_id = token.token if isinstance(token, Reservation) else token
         if not token_id or token_id not in self._reservations:
             return False
@@ -74,6 +78,7 @@ class BudgetController:
         return not self.over_budget and response_cost_usd <= max(0.0, self.config.budget_usd - before)
 
     def select(self, model: str, estimated_tokens: int, *, allow_truncate: bool = False) -> Decision:
+        """Choose primary, fallback, truncated, or disabled execution in that order."""
         if self.over_budget:
             return Decision(model=None, allow_llm=False, reason="budget_exceeded")
         remaining = self.config.budget_usd - self.spent_usd - self.reserved_usd
