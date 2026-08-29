@@ -48,6 +48,7 @@ class ReviewPipeline:
         self.llm = llm
         self.config = config
         self.rules = rules
+        self._lease_token: str | None = None
 
     def _trace(self, run_id: str, *, kind: str, input_hash: str = "", prompt: str = "", response: str = "", model: str = "", tool_name: str = "", prompt_tokens: int = 0, completion_tokens: int = 0, cost_usd: float = 0.0, duration_ms: int = 0, error: str = "", parent_trace_id: str = "", rule_id: str = "", ruleset_hash: str = "", metadata: dict[str, Any] | None = None) -> str:
         trace_id = f"trace-{uuid4().hex}"
@@ -210,7 +211,7 @@ class ReviewPipeline:
                             continue
                     had_inflight = bool(db_reservation and db_reservation.get("status") == "in_flight")
                     if had_inflight:
-                        self.store.settle_reservation(run_id, token, 0.0)
+                        self.store.settle_reservation(run_id, token, 0.0, owner_token=self._lease_token)
                     elif reservation_state.get("status") == "pending" and db_reservation is None:
                         self.store.save_checkpoint(run_id, reservation_key, {**reservation_state, **expected, "status": "recovered"})
                         reservation_state = None
@@ -239,7 +240,7 @@ class ReviewPipeline:
                 reservation = controller.reserve(decision.model, decision.estimated_tokens or estimate_tokens(prompt))
                 # 先写 pending 再创建数据库 reservation；任一边界崩溃后都能确定性对账。
                 self.store.save_checkpoint(run_id, reservation_key, {**expected, "status": "pending", "token": reservation.token if reservation else "", "reserved_usd": reservation.reserved_usd if reservation else 0.0, "model": decision.model})
-                if reservation is None or not self.store.reserve_budget(run_id, reservation.token, reservation.reserved_usd):
+                if reservation is None or not self.store.reserve_budget(run_id, reservation.token, reservation.reserved_usd, self._lease_token):
                     if reservation is not None:
                         controller.commit(reservation, 0.0)
                     degradations.append("budget_exceeded")
@@ -259,6 +260,7 @@ class ReviewPipeline:
                          "rejections": list(parsed.rejections), "prompt": prompt if decision.max_chars is None else prompt[:decision.max_chars],
                          "model": response.model or decision.model, "prompt_tokens": response.prompt_tokens,
                          "completion_tokens": response.completion_tokens},
+                        owner_token=self._lease_token,
                     )
                     accepted = accepted and persisted_accepted
                     rejection_messages = list(parsed.rejections)
@@ -290,7 +292,7 @@ class ReviewPipeline:
                         )
                     else:
                         controller.commit(reservation, 0.0)
-                        self.store.settle_reservation(run_id, reservation.token, 0.0)
+                        self.store.settle_reservation(run_id, reservation.token, 0.0, owner_token=self._lease_token)
                         # 已明确收到 provider 异常时允许恢复重试；只有进程突然中断
                         # 留下的 in_flight 状态才按未知结果保守处理。
                         self.store.save_checkpoint(
@@ -321,6 +323,7 @@ class ReviewPipeline:
             run = self.store.get_run(run_id)
 
         lease_token = str(uuid4())
+        self._lease_token = lease_token
         lease_ttl = max(120, int(config.llm_timeout_seconds * 2 + 60))
         if not self.store.acquire_run_lease(run_id, lease_token, lease_ttl):
             raise RuntimeError(f"run {run_id} is already active")
@@ -436,3 +439,4 @@ class ReviewPipeline:
             heartbeat_stop.set()
             heartbeat_thread.join(timeout=1)
             self.store.release_run_lease(run_id, lease_token)
+            self._lease_token = None

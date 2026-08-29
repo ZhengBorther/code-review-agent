@@ -90,3 +90,13 @@ def test_run_lease_heartbeat_keeps_active_owner_exclusive(tmp_path):
     assert store.acquire_run_lease(run_id, "owner-1", ttl_seconds=1)
     assert store.refresh_run_lease(run_id, "owner-1", ttl_seconds=60)
     assert not store.acquire_run_lease(run_id, "owner-2", ttl_seconds=60)
+
+
+def test_old_lease_owner_cannot_settle_after_takeover(tmp_path):
+    store = StateStore(tmp_path / "state.db")
+    run_id = store.create_run(RunConfig(url="local://fixture", budget_usd=1.0))
+    assert store.acquire_run_lease(run_id, "owner-1", ttl_seconds=0)
+    assert store.acquire_run_lease(run_id, "owner-2", ttl_seconds=60)
+    assert store.reserve_budget(run_id, "reservation-1", 0.2, owner_token="owner-2")
+    assert store.settle_reservation(run_id, "reservation-1", 0.1, owner_token="owner-1") is False
+    assert store.settle_reservation(run_id, "reservation-1", 0.1, owner_token="owner-2") is True

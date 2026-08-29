@@ -65,6 +65,7 @@ class StateStore:
                 CREATE TABLE IF NOT EXISTS reservations (
                     token TEXT PRIMARY KEY,
                     run_id TEXT NOT NULL,
+                    owner_token TEXT,
                     reserved_usd REAL NOT NULL,
                     status TEXT NOT NULL DEFAULT 'in_flight',
                     actual_usd REAL NOT NULL DEFAULT 0,
@@ -88,6 +89,8 @@ class StateStore:
                     "ALTER TABLE checkpoints ADD COLUMN status TEXT NOT NULL DEFAULT 'success'"
                 )
             reservation_columns = {row["name"] for row in connection.execute("PRAGMA table_info(reservations)")}
+            if "owner_token" not in reservation_columns:
+                connection.execute("ALTER TABLE reservations ADD COLUMN owner_token TEXT")
             if "result_json" not in reservation_columns:
                 connection.execute("ALTER TABLE reservations ADD COLUMN result_json TEXT NOT NULL DEFAULT '{}'")
 
@@ -289,7 +292,7 @@ class StateStore:
             if cursor.rowcount == 0:
                 raise KeyError(f"unknown run: {run_id}")
 
-    def reserve_budget(self, run_id: str, token: str, amount_usd: float) -> bool:
+    def reserve_budget(self, run_id: str, token: str, amount_usd: float, owner_token: str | None = None) -> bool:
         """在 LLM 请求前跨进程原子预留预算。"""
         amount = max(0.0, float(amount_usd))
         now = _utc_now()
@@ -308,12 +311,12 @@ class StateStore:
             if float(run["cost_usd"]) + float(reserved) + amount > float(run["budget_usd"]) + 1e-12:
                 return False
             connection.execute(
-                "INSERT INTO reservations (token, run_id, reserved_usd, status, created_at, updated_at) VALUES (?, ?, ?, 'in_flight', ?, ?)",
-                (token, run_id, amount, now, now),
+                "INSERT INTO reservations (token, run_id, owner_token, reserved_usd, status, created_at, updated_at) VALUES (?, ?, ?, ?, 'in_flight', ?, ?)",
+                (token, run_id, owner_token, amount, now, now),
             )
             return True
 
-    def settle_reservation(self, run_id: str, token: str, actual_usd: float, result: dict[str, Any] | None = None) -> bool:
+    def settle_reservation(self, run_id: str, token: str, actual_usd: float, result: dict[str, Any] | None = None, owner_token: str | None = None) -> bool:
         """释放预留并原子记录供应商实际成本。"""
         actual = max(0.0, float(actual_usd))
         now = _utc_now()
@@ -321,11 +324,19 @@ class StateStore:
             # 回复和成本在同一事务中持久化，结算后崩溃时可重建 finding，避免重复计费请求。
             connection.execute("BEGIN IMMEDIATE")
             reservation = connection.execute(
-                "SELECT reserved_usd, status FROM reservations WHERE token = ? AND run_id = ?",
+                "SELECT reserved_usd, status, owner_token FROM reservations WHERE token = ? AND run_id = ?",
                 (token, run_id),
             ).fetchone()
             if reservation is None or reservation["status"] != "in_flight":
                 return False
+            if owner_token is not None and reservation["owner_token"] != owner_token:
+                # A new lease owner may reconcile a reservation left by a
+                # crashed worker; an old worker cannot settle after takeover.
+                lease = connection.execute(
+                    "SELECT owner_token FROM run_leases WHERE run_id = ?", (run_id,)
+                ).fetchone()
+                if lease is None or lease["owner_token"] != owner_token:
+                    return False
             run = connection.execute("SELECT budget_usd, cost_usd FROM runs WHERE run_id = ?", (run_id,)).fetchone()
             remaining = max(0.0, float(run["budget_usd"]) - float(run["cost_usd"]))
             accepted = actual <= remaining + 1e-12
