@@ -1,4 +1,4 @@
-"""Markdown renderer for review results."""
+"""Review 结果的 Markdown 渲染器。"""
 
 from __future__ import annotations
 
@@ -7,12 +7,12 @@ from .security import redact_secrets
 
 
 def _safe(value: str) -> str:
-    """Apply the same deterministic redaction to every rendered free-text field."""
+    """对所有渲染出的自由文本统一执行确定性脱敏。"""
     return redact_secrets(value).text
 
 
 def render_markdown(result: ReviewResult) -> str:
-    """Render findings, budget state, and trace evidence without exposing secrets."""
+    """渲染 finding、预算状态和 trace 证据，同时避免暴露 secret。"""
     high = [item for item in result.findings if item.confidence == "high"]
     advisory = [item for item in result.findings if item.confidence == "advisory"]
     lines = [

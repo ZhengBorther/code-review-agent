@@ -1,4 +1,4 @@
-"""Immutable domain objects shared by the review pipeline."""
+"""评审流水线共享的不可变领域对象。"""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ _Model = TypeVar("_Model")
 
 
 class _Serializable:
-    """Small explicit serialization API used by SQLite JSON columns."""
+    """供 SQLite JSON 字段使用的显式序列化接口。"""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -23,7 +23,7 @@ class _Serializable:
 
 @dataclass(frozen=True)
 class ChangeRequest(_Serializable):
-    """Provider metadata plus the exact unified diff being reviewed."""
+    """代码托管平台元数据和本次实际评审的 unified diff。"""
     url: str
     title: str = ""
     author: str = ""
@@ -36,7 +36,7 @@ class ChangeRequest(_Serializable):
 
 @dataclass(frozen=True)
 class Finding(_Serializable):
-    """One actionable or advisory review comment with optional source location."""
+    """一条可直接采纳或仅供参考的评论，可带文件和行号位置。"""
     title: str
     body: str
     confidence: Confidence
@@ -55,7 +55,7 @@ class Finding(_Serializable):
 
 @dataclass(frozen=True)
 class TraceRecord(_Serializable):
-    """Auditable record of a tool/model operation; prompt and response are redacted upstream."""
+    """工具或模型操作的审计记录；prompt 和回复在上游已完成脱敏。"""
     trace_id: str
     run_id: str
     kind: str
@@ -87,7 +87,7 @@ class LLMResponse(_Serializable):
 
 @dataclass(frozen=True)
 class RunConfig(_Serializable):
-    """Resolved run settings persisted with the run so recovery is deterministic."""
+    """随 run 持久化的解析后配置，保证恢复时使用相同设置。"""
     url: str
     budget_usd: float = 1.0
     model: str = "large"
@@ -104,6 +104,7 @@ class RunConfig(_Serializable):
     gitlab_allowed_hosts: tuple[str, ...] = ()
     model_pricing: dict[str, float] = field(default_factory=dict)
     llm_timeout_seconds: float = 30.0
+    review_mode: str = "mdr_only"
 
     def to_dict(self) -> dict[str, Any]:
         payload = super().to_dict()

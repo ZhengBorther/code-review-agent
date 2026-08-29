@@ -1,4 +1,4 @@
-"""Batch MDR rules by language and validate their structured LLM output."""
+"""按语言批量组织 MDR 规则，并校验模型结构化输出。"""
 
 from __future__ import annotations
 
@@ -33,17 +33,15 @@ def build_rule_batches(
     rules: tuple[ReviewRule, ...] | list[ReviewRule],
     max_prompt_chars: int,
 ) -> tuple[RuleBatch, ...]:
-    """Build deterministic same-language batches, splitting only on rule IDs.
+    """构造确定性的同语言批次，只按 rule ID 顺序拆分。
 
-    Rules are sorted by ID so retries produce the same prompts and checkpoint
-    identities. Common rules should already be included by ``RuleRegistry``.
+    规则按 ID 排序，保证重试时 prompt 和 checkpoint 身份一致。
+    ``RuleRegistry`` 应负责把 common 规则加入目标语言。
     """
     if max_prompt_chars <= 0:
         raise ValueError("max_prompt_chars must be positive")
     language = language_diff.language.lower()
-    # ``common`` rules are intentionally shared; all other languages are
-    # excluded here so callers cannot accidentally create cross-language
-    # prompts by passing a broad registry result.
+    # common 规则有意共享；其他语言规则在这里过滤，避免调用方传入过宽集合。
     ordered = tuple(sorted(
         (rule for rule in rules if rule.language.lower() in (language, "common")),
         key=lambda rule: rule.id,
@@ -52,15 +50,13 @@ def build_rule_batches(
         return ()
     batches: list[RuleBatch] = []
     current: list[ReviewRule] = []
-    # Add rules in ID order and close a batch before it crosses the prompt
-    # limit, making retries and checkpoint keys deterministic.
+    # 按 ID 顺序加入规则，超过 prompt 上限前关闭当前批次，保证重试和 checkpoint 稳定。
     for rule in ordered:
         candidate = tuple(current + [rule])
         candidate_batch = RuleBatch(language=language, files=language_diff.files,
                                      diff=language_diff.diff, diff_hash=language_diff.diff_hash,
                                      rules=candidate)
-        # A multi-rule batch is kept whenever it fits. A single rule may be
-        # larger than the limit; retaining it is preferable to dropping it.
+        # 只要能容纳就合并多条规则；单条过大时由 _fit_batch 做确定性截断或报错。
         if current and len(build_rule_prompt(candidate_batch)) > max_prompt_chars:
             batches.append(_fit_batch(RuleBatch(language=language, files=language_diff.files,
                                      diff=language_diff.diff, diff_hash=language_diff.diff_hash,
@@ -76,12 +72,10 @@ def build_rule_batches(
 
 
 def _fit_batch(batch: RuleBatch, limit: int) -> RuleBatch:
-    """Deterministically trim variable content until the rendered prompt fits."""
+    """确定性裁剪可变文本，直到渲染后的 prompt 不超过上限。"""
     if len(build_rule_prompt(batch)) <= limit:
         return batch
-    # First trim the diff, which is usually the largest component.
-    # Binary search keeps the largest safe prefix while preserving a stable
-    # result for the same input and limit.
+    # diff 通常是最大部分；二分查找保留在上限内的最长前缀，并保持结果稳定。
     lo, hi = 0, len(batch.diff)
     best = ""
     while lo <= hi:
@@ -94,8 +88,7 @@ def _fit_batch(batch: RuleBatch, limit: int) -> RuleBatch:
     fitted = replace(batch, diff=best, diff_hash=hashlib.sha256(best.encode("utf-8")).hexdigest())
     if len(build_rule_prompt(fitted)) <= limit:
         return fitted
-    # If rule metadata itself is too large, shorten prose fields while
-    # preserving IDs, language, severity and domains.
+    # 如果规则元数据仍过大，只缩短正文和提示，保留 ID、语言、严重度和域信息。
     variable = [(index, "prompt_hint") for index in range(len(batch.rules))]
     variable += [(index, "body") for index in range(len(batch.rules))]
     for index, field_name in variable:
@@ -119,13 +112,12 @@ def _fit_batch(batch: RuleBatch, limit: int) -> RuleBatch:
         ))
         if len(build_rule_prompt(fitted)) <= limit:
             return fitted
-    # The fixed contract/identifiers have a minimum representable size. A
-    # clear error is safer than returning an over-budget prompt silently.
+    # 固定协议和标识本身有最小长度；明确报错比悄悄返回超预算 prompt 更安全。
     raise ValueError(f"max_prompt_chars={limit} is too small for MDR batch metadata")
 
 
 def build_rule_prompt(batch: RuleBatch) -> str:
-    """Render and redact a JSON-only review prompt for a language batch."""
+    """渲染并脱敏一个只允许 JSON 输出的语言批次 prompt。"""
     rules = []
     for rule in batch.rules:
         rules.append({
@@ -162,7 +154,7 @@ def _bounded_string(value: Any, field: str) -> str:
 
 
 def parse_rule_response(text: str, batch: RuleBatch) -> RuleParseResult:
-    """Parse a strict JSON response, rejecting untrusted rule/file references."""
+    """解析严格 JSON 回复，并拒绝不可信的规则或文件引用。"""
     if not isinstance(text, str) or "```" in text:
         return RuleParseResult(rejections=("response must be JSON without Markdown fences",))
     try:

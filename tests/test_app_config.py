@@ -11,6 +11,7 @@ def test_load_app_config_reads_review_llm_and_pricing_sections(tmp_path):
 budget_usd = 10.0
 max_diff_chars = 8000
 completion_tokens = 256
+mode = "hybrid"
 output = "out.md"
 state_dir = ".state"
 
@@ -28,6 +29,7 @@ qwen-turbo = 0.001
     )
     config = load_app_config(config_file)
     assert config.budget_usd == 10.0
+    assert config.review_mode == "hybrid"
     assert config.model == "qwen-plus"
     assert config.fallback_model == "qwen-turbo"
     assert config.model_pricing == {"qwen-plus": 0.003, "qwen-turbo": 0.001}
@@ -70,3 +72,14 @@ token = "gitlab-secret"
     assert config.github_token == "github-secret"
     assert config.gitlab_token == "gitlab-secret"
     assert "llm_api_key" not in RunConfig(url="x").to_dict()
+
+
+def test_review_mode_defaults_to_mdr_only():
+    assert load_app_config(environ={}).review_mode == "mdr_only"
+
+
+def test_review_mode_rejects_unknown_value(tmp_path):
+    config_file = tmp_path / "review-agent.toml"
+    config_file.write_text('[review]\nmode = "creative"\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="review.mode"):
+        load_app_config(config_file, environ={})

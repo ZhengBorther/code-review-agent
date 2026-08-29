@@ -1,4 +1,4 @@
-"""Declaratively registered, in-process review analyzers."""
+"""声明式注册的进程内 Review 分析器。"""
 
 from __future__ import annotations
 
@@ -26,13 +26,13 @@ class ToolSpec:
 
 
 class ToolRegistry:
-    """In-process registry; runners receive sanitized data and never shell commands."""
+    """进程内工具注册表；runner 只接收脱敏数据，永远不执行 shell 命令。"""
 
     def __init__(self) -> None:
         self.specs: list[ToolSpec] = []
 
     def register(self, spec: ToolSpec) -> None:
-        """Add one uniquely named declarative tool to the execution list."""
+        """添加一个名称唯一的声明式工具。"""
         if spec.confidence not in ("high", "advisory"):
             raise ValueError("confidence must be 'high' or 'advisory'")
         if any(existing.name == spec.name for existing in self.specs):
@@ -40,7 +40,7 @@ class ToolRegistry:
         self.specs.append(spec)
 
     def run_all(self, change_request: ChangeRequest, sanitized_diff: str) -> list[Finding]:
-        """Run registered tools against a second sanitized copy of the change."""
+        """对变更的第二份脱敏副本执行所有已注册工具。"""
         findings: list[Finding] = []
         sanitized_diff = redact_secrets(sanitized_diff).text
         sanitized_request = replace(change_request, diff=sanitized_diff)

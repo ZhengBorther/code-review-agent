@@ -1,4 +1,4 @@
-"""TOML configuration for explicitly authorized rule directories."""
+"""TOML 配置解析，以及显式授权的 MDR 规则目录配置。"""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ class RulesConfig:
 
 @dataclass(frozen=True)
 class AppConfig:
-    """Resolved runtime configuration; secrets are supplied by the environment."""
+    """解析后的运行配置；敏感凭据只在本次进程内使用，不进入运行快照。"""
 
     budget_usd: float = 1.0
     model: str = "large"
@@ -36,6 +36,7 @@ class AppConfig:
     offline: bool = False
     rules: RulesConfig = field(default_factory=RulesConfig)
     gitlab_allowed_hosts: tuple[str, ...] = ()
+    review_mode: str = "mdr_only"
 
 
 def _table(data: Mapping[str, Any], name: str) -> dict[str, Any]:
@@ -51,7 +52,7 @@ def load_app_config(
     overrides: Mapping[str, Any] | None = None,
     environ: Mapping[str, str] | None = None,
 ) -> AppConfig:
-    """Resolve defaults, TOML, environment, then explicit CLI overrides."""
+    """按默认值、TOML、环境变量、CLI 覆盖的顺序解析完整配置。"""
     env = dict(os.environ if environ is None else environ)
     data: dict[str, Any] = {}
     config_path: Path | None = None
@@ -93,9 +94,9 @@ def load_app_config(
         "gitlab_token": env.get("GITLAB_TOKEN") or gitlab.get("token"),
         "llm_timeout_seconds": float(value(llm, "timeout_seconds", "ONEAPI_TIMEOUT_SECONDS", 30.0)),
         "offline": boolean(value(review, "offline", "REVIEW_OFFLINE", False), "review.offline"),
+        "review_mode": str(value(review, "mode", "REVIEW_MODE", "mdr_only")),
     }
-    # File-owned paths follow the config file, while environment and CLI paths
-    # retain normal process-working-directory semantics.
+    # 配置文件声明的路径相对配置文件解析，环境变量和 CLI 路径仍相对当前进程目录。
     if config_path is not None and "REVIEW_OUTPUT" not in env and "output" in review:
         output = Path(resolved["output_path"])
         resolved["output_path"] = str(output if output.is_absolute() else config_path.parent / output)
@@ -123,13 +124,14 @@ def load_app_config(
         raise ValueError("review budget and token limits must be positive")
     if resolved["llm_timeout_seconds"] <= 0:
         raise ValueError("llm timeout_seconds must be positive")
+    if resolved["review_mode"] not in {"mdr_only", "hybrid", "generic"}:
+        raise ValueError("review.mode must be one of: mdr_only, hybrid, generic")
     return AppConfig(rules=load_rules_config(path, cli_directories), **resolved)
 
 
 def load_rules_config(path: str | Path | None = None,
                       cli_directories: list[str | Path] | None = None) -> RulesConfig:
-    # TOML paths are relative to the config file; CLI paths are relative to
-    # the process working directory, matching normal command-line semantics.
+    # TOML 路径相对配置文件，CLI 路径相对当前工作目录，符合命令行直觉。
     directories: list[Path] = []
     enabled: tuple[str, ...] = ()
     disabled: tuple[str, ...] = ()
@@ -159,6 +161,6 @@ def load_rules_config(path: str | Path | None = None,
         disabled = tuple(raw_disabled)
     for item in cli_directories or []:
         directories.append(Path(item).resolve())
-    # Preserve declaration order while preventing duplicate directory scans.
+    # 保留声明顺序，同时去重，避免重复扫描同一个规则目录。
     directories = list(dict.fromkeys(directories))
     return RulesConfig(tuple(directories), enabled, disabled)

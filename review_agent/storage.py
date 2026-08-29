@@ -1,4 +1,4 @@
-"""Durable SQLite state for resumable review runs."""
+"""用于恢复 Review run 的持久化 SQLite 状态。"""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ def _utc_now() -> str:
 
 
 class StateStore:
-    """Persist runs, stage outputs, and audit traces in a local SQLite file."""
+    """在本地 SQLite 文件中保存 run、阶段结果和审计 trace。"""
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
@@ -97,7 +97,7 @@ class StateStore:
         return run_id
 
     def get_checkpoint(self, run_id: str, stage: str) -> dict[str, Any] | None:
-        """Return only successful stage data; failed/superseded data stays inspectable."""
+        """只返回成功阶段的数据；失败或过期记录仍可被审计查询。"""
         record = self.get_checkpoint_record(run_id, stage)
         if record is None or record["status"] != "success":
             return None
@@ -144,7 +144,7 @@ class StateStore:
     def save_checkpoint(
         self, run_id: str, stage: str, payload: dict[str, Any], *, status: str = "success"
     ) -> None:
-        """Atomically upsert JSON stage output so retries remain idempotent."""
+        """原子 upsert JSON 阶段结果，使重试保持幂等。"""
         now = _utc_now()
         payload_json = json.dumps(payload, ensure_ascii=True)
         with self._connect() as connection:
@@ -166,11 +166,10 @@ class StateStore:
             )
 
     def supersede_checkpoint(self, run_id: str, stage: str) -> None:
-        """Mark a checkpoint superseded and release its reservation atomically."""
+        """原子地标记过期 checkpoint，并释放它关联的预算预留。"""
         now = _utc_now()
         with self._connect() as connection:
-            # BEGIN IMMEDIATE serializes supersede/settle with concurrent
-            # workers so a stale checkpoint cannot release a newly settled run.
+            # BEGIN IMMEDIATE 串行化过期和结算，避免旧 checkpoint 释放新请求的预算。
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 "SELECT payload_json FROM checkpoints WHERE run_id = ? AND stage = ?",
@@ -224,7 +223,7 @@ class StateStore:
         return result
 
     def find_latest_run(self, url: str) -> dict[str, Any] | None:
-        """Return the most recently updated run for a stable source URL."""
+        """按稳定来源 URL 查找最近更新的 run。"""
         with self._connect() as connection:
             row = connection.execute(
                 "SELECT * FROM runs WHERE url = ? ORDER BY updated_at DESC LIMIT 1", (url,)
@@ -245,12 +244,11 @@ class StateStore:
                 raise KeyError(f"unknown run: {run_id}")
 
     def reserve_budget(self, run_id: str, token: str, amount_usd: float) -> bool:
-        """Atomically reserve budget across processes before an LLM request."""
+        """在 LLM 请求前跨进程原子预留预算。"""
         amount = max(0.0, float(amount_usd))
         now = _utc_now()
         with self._connect() as connection:
-            # Lock the run before summing reservations; otherwise two workers
-            # could both observe the same remaining budget and overspend.
+            # 先锁定事务再汇总预留，否则两个 worker 可能同时看到同一余额并超支。
             connection.execute("BEGIN IMMEDIATE")
             run = connection.execute(
                 "SELECT budget_usd, cost_usd FROM runs WHERE run_id = ?", (run_id,)
@@ -270,13 +268,11 @@ class StateStore:
             return True
 
     def settle_reservation(self, run_id: str, token: str, actual_usd: float, result: dict[str, Any] | None = None) -> bool:
-        """Release a reservation and atomically account actual provider cost."""
+        """释放预留并原子记录供应商实际成本。"""
         actual = max(0.0, float(actual_usd))
         now = _utc_now()
         with self._connect() as connection:
-            # Persist provider result and accounting in one transaction so a
-            # crash after settlement can reconstruct findings without retrying
-            # a potentially billable request.
+            # 回复和成本在同一事务中持久化，结算后崩溃时可重建 finding，避免重复计费请求。
             connection.execute("BEGIN IMMEDIATE")
             reservation = connection.execute(
                 "SELECT reserved_usd, status FROM reservations WHERE token = ? AND run_id = ?",
@@ -293,7 +289,7 @@ class StateStore:
             return accepted
 
     def release_reservation(self, run_id: str, token: str) -> bool:
-        """Release an in-flight reservation without charging provider cost."""
+        """释放进行中的预算预留，但不记录供应商成本。"""
         now = _utc_now()
         with self._connect() as connection:
             cursor = connection.execute(

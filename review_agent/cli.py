@@ -1,4 +1,4 @@
-"""Command-line interface for the checkpointed code review agent."""
+"""带 checkpoint 的 Code Review Agent 命令行入口。"""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ from .tools import ToolRegistry
 
 
 def _gitlab_host_allowed(host: str, cli_hosts: list[str], persisted: dict | None) -> bool:
-    """Allow public GitLab or explicitly named private hosts, never fuzzy matches."""
+    """只允许公共 GitLab 或显式声明的私有 host，禁止模糊匹配。"""
     normalized = {item.strip().lower() for item in cli_hosts if item.strip()}
     env_hosts = {item.strip().lower() for item in os.getenv("GITLAB_ALLOWED_HOSTS", "").split(",") if item.strip()}
     if persisted:
@@ -30,7 +30,7 @@ def _gitlab_host_allowed(host: str, cli_hosts: list[str], persisted: dict | None
 
 
 def _load_rule_registry(config_path: Path | None, rule_dirs: list[Path] | None, *, snapshot: list[dict] | None = None) -> RuleRegistry:
-    """Load only authorized MDR files, or rebuild the exact persisted snapshot."""
+    """只加载已授权的 MDR 文件，或重建运行时保存的精确规则快照。"""
     if snapshot is not None:
         configured = load_rules_config(config_path, rule_dirs)
         return RuleRegistry.from_snapshot(configured, snapshot)
@@ -83,6 +83,7 @@ def _parser() -> argparse.ArgumentParser:
     review.add_argument("--github-token", default=None, help="GitHub token (prefer GITHUB_TOKEN)")
     review.add_argument("--gitlab-token", default=None, help="GitLab token (prefer GITLAB_TOKEN)")
     review.add_argument("--offline", action="store_true", default=None, help="use deterministic local model; never access network")
+    review.add_argument("--review-mode", choices=("mdr_only", "hybrid", "generic"), default=None, help="review mode: MDR-only by default")
     review.add_argument("--gitlab-host", action="append", default=[], help="explicitly authorize a self-hosted GitLab hostname; repeatable")
     return parser
 
@@ -105,6 +106,7 @@ def _run_review(args: argparse.Namespace) -> int:
             "github_token": args.github_token,
             "gitlab_token": args.gitlab_token,
             "offline": args.offline,
+            "review_mode": args.review_mode,
             "gitlab_allowed_hosts": tuple(args.gitlab_host) if args.gitlab_host else None,
         },
     )
@@ -133,8 +135,7 @@ def _run_review(args: argparse.Namespace) -> int:
     elif args.diff_file is not None:
         resolved = args.diff_file.resolve()
         digest = hashlib.sha256(resolved.read_bytes()).hexdigest() if resolved.is_file() else "missing"
-        # Include path and content identity so different local inputs never
-        # silently reuse a prior run's checkpoints.
+        # 将路径和内容身份写入 URL，避免不同本地输入悄悄复用旧 checkpoint。
         url = args.url or f"local://{resolved}#sha256={digest}"
         adapter = LocalDiffAdapter(args.diff_file)
     else:
@@ -159,8 +160,7 @@ def _run_review(args: argparse.Namespace) -> int:
         )
 
     if persisted_config is not None and args.config is None and not args.rules_dir:
-        # A resumed run must use the exact rule snapshot that created its
-        # checkpoints; loading today's directories could silently change them.
+        # 恢复运行必须使用创建 checkpoint 时的规则快照，不能被今天的目录内容悄悄改变。
         snapshot_config = RulesConfig(
             enabled_languages=tuple(persisted_config.get("rules_enabled_languages", ())),
             disabled_rules=tuple(persisted_config.get("rules_disabled", ())),
@@ -185,6 +185,7 @@ def _run_review(args: argparse.Namespace) -> int:
         gitlab_allowed_hosts=app_config.gitlab_allowed_hosts,
         model_pricing=app_config.model_pricing,
         llm_timeout_seconds=app_config.llm_timeout_seconds,
+        review_mode=app_config.review_mode,
     )
     run_target = args.run_id
     if not run_target and url.startswith("local://"):
@@ -212,5 +213,5 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
 
-if __name__ == "__main__":  # pragma: no cover
+if __name__ == "__main__":  # 仅作为模块入口执行
     raise SystemExit(main())

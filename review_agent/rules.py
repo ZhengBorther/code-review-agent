@@ -1,4 +1,4 @@
-"""Safe, data-only loading of Markdown review rules."""
+"""安全地以数据方式加载 Markdown Review 规则。"""
 
 from __future__ import annotations
 
@@ -13,13 +13,13 @@ from typing import Any
 
 import yaml
 
-# Older PyYAML releases still refer to the pre-3.10 collections aliases.
+# 兼容旧版 PyYAML 对 Python 3.10 之前 collections 别名的引用方式。
 if not hasattr(collections, "Hashable"):
     collections.Hashable = abc.Hashable
 
 
 class RuleLoadError(ValueError):
-    """Raised when an MDR file is invalid or unsafe to load."""
+    """MDR 文件格式非法或加载不安全时抛出的异常。"""
 
 
 @dataclass(frozen=True)
@@ -36,7 +36,7 @@ class ReviewRule:
 
 
 class RuleRegistry:
-    """Registry for data-only MDR rules and their effective configuration."""
+    """保存纯数据 MDR 规则，并计算当前配置下真正生效的规则集合。"""
 
     def __init__(self, config: Any):
         self.config = config
@@ -113,8 +113,7 @@ class MdrRuleLoader:
             raise RuleLoadError(f"rule directory does not exist: {directory}")
         result = []
         seen: dict[str, str] = {}
-        # Resolve and reject symlinks before reading: an authorized rules
-        # directory must not become a path traversal primitive.
+        # 读取前解析并拒绝 symlink，避免授权目录被利用成路径穿越入口。
         for path in sorted(root.rglob("*.mdr")):
             if path.is_symlink():
                 raise RuleLoadError(f"symlink rule file is not allowed: {path.name}")
@@ -138,8 +137,7 @@ class MdrRuleLoader:
         return result
 
     def _parse(self, text: str, source: str) -> ReviewRule:
-        # Only a fence on its own line closes front matter; '---' in a YAML
-        # block scalar or Markdown body must remain ordinary rule content.
+        # 只有独立一行的 fence 才能结束 front matter；YAML 块标量或正文中的 --- 不应截断。
         lines = text.splitlines(keepends=True)
         if not lines or lines[0].rstrip("\r\n") != "---":
             raise RuleLoadError(f"invalid YAML front matter in {source}")

@@ -1,4 +1,4 @@
-"""Secret detection and deterministic redaction before LLM calls."""
+"""在调用 LLM 前检测 secret 并执行确定性脱敏。"""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ def _replacement(kind: str) -> str:
 
 
 def redact_secrets(text: str) -> RedactionResult:
-    """Redact common credentials while preserving deterministic match metadata."""
+    """脱敏常见凭据，同时保留可审计且确定性的匹配元数据。"""
     matches: list[SecretMatch] = []
     spans: list[tuple[int, int, str]] = []
 
@@ -53,13 +53,13 @@ def redact_secrets(text: str) -> RedactionResult:
                 continue
             spans.append((match.start(1), match.end(1), kind))
 
-    # Long quoted assignments are likely credentials when no specific name exists.
+    # 没有明确字段名时，长引号字符串仍可能是凭据，因此按高熵值处理。
     for match in re.finditer(r"(['\"])([^'\"\n]{24,})\1", text):
         value = match.group(2)
         if len(set(value)) >= 8 and not any(start <= match.start(2) < end for start, end, _ in spans):
             spans.append((match.start(2), match.end(2), "high_entropy"))
 
-    # Prefer larger matches and make overlapping patterns deterministic.
+    # 重叠匹配优先选择更长的范围，并按固定顺序处理，保证重复运行结果一致。
     selected: list[tuple[int, int, str]] = []
     for start, end, kind in sorted(spans, key=lambda item: (item[0], -(item[1] - item[0]))):
         if any(start < other_end and end > other_start for other_start, other_end, _ in selected):

@@ -1,4 +1,4 @@
-"""Local, auditable code review agent."""
+"""本地、可审计的 Code Review Agent。"""
 
 __version__ = "0.1.0"
 

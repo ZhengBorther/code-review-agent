@@ -1,4 +1,4 @@
-"""Language-aware grouping of unified diff file sections."""
+"""按语言分组 unified diff 文件片段。"""
 
 from __future__ import annotations
 
@@ -32,8 +32,8 @@ def _path_for_section(section: str) -> str | None:
             if value.startswith("b/"):
                 return value[2:]
             return value
-    # Binary and malformed sections may omit +++; recover the path from the
-    # canonical git header so they remain observable as unknown changes.
+    # 二进制或格式不完整的片段可能没有 +++ 行；从标准 Git 头恢复路径，
+    # 这样它们会进入 unknown 分组而不会被静默丢弃。
     header = re.search(r"^diff --git a/(\S+) b/(\S+)$", section, re.MULTILINE)
     if header:
         return header.group(2)
@@ -49,7 +49,7 @@ def _language(path: str) -> str | None:
 
 
 def split_diff_by_language(diff: str) -> tuple[LanguageDiff, ...]:
-    """Group complete diff sections, retaining unsupported files as ``unknown``."""
+    """保留完整 diff 片段，无法识别扩展名的文件归入 ``unknown``。"""
     starts = [match.start() for match in _SECTION.finditer(diff)]
     sections = [diff[start:end] for start, end in zip(starts, starts[1:] + [len(diff)])]
     grouped: dict[str, list[tuple[str, str]]] = {}
@@ -59,8 +59,7 @@ def split_diff_by_language(diff: str) -> tuple[LanguageDiff, ...]:
         if language is not None:
             grouped.setdefault(language, []).append((path, section))
         elif path is not None:
-            # Unknown files must remain visible to callers for diagnostics and
-            # policy decisions instead of disappearing from the review input.
+            # 未知文件必须保留，供诊断和策略决策使用，不能从评审输入中消失。
             grouped.setdefault("unknown", []).append((path, section))
     result = []
     for language in sorted(grouped):

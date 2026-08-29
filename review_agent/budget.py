@@ -1,4 +1,4 @@
-"""Token budget accounting and model degradation policy."""
+"""Token 预算核算和模型降级策略。"""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ class Reservation:
 
 
 class BudgetController:
-    """Apply the model fallback/truncation policy and track in-process spend."""
+    """执行主模型、降级、截断策略，并跟踪当前进程中的花费。"""
 
     def __init__(self, config: RunConfig, pricing: dict[str, float] | None = None):
         self.config = config
@@ -38,11 +38,11 @@ class BudgetController:
         self._reservations: dict[str, float] = {}
 
     def estimate_cost(self, model: str, tokens: int) -> float:
-        """Estimate blended prompt+completion cost in USD for 1K-token pricing."""
+        """按每 1,000 token 的 blended 费率估算 prompt 加 completion 的美元成本。"""
         return tokens / 1000 * self.pricing.get(model, self.pricing.get("small", 0.01))
 
     def reserve(self, model: str, estimated_tokens: int) -> Reservation | None:
-        """Atomically reserve prompt plus completion allowance before calling an LLM."""
+        """调用 LLM 前，预留 prompt 和 completion 配额，防止预计成本超预算。"""
         amount = self.estimate_cost(model, estimated_tokens + self.config.completion_tokens)
         if amount > max(0.0, self.config.budget_usd - self.spent_usd - self.reserved_usd):
             return None
@@ -52,7 +52,7 @@ class BudgetController:
         return token
 
     def commit(self, token: Reservation | str | None, actual_cost_usd: float) -> bool:
-        """Close one reservation and reject a response that would exceed budget."""
+        """关闭一次预留；如果实际响应会超预算，则拒绝该响应。"""
         token_id = token.token if isinstance(token, Reservation) else token
         if not token_id or token_id not in self._reservations:
             return False
@@ -72,13 +72,13 @@ class BudgetController:
             self.spent_usd += amount
 
     def accept_response(self, response_cost_usd: float) -> bool:
-        """Record actual usage; return False when it exceeded remaining budget."""
+        """记录实际用量；实际成本超过剩余预算时返回 False。"""
         before = self.spent_usd
         self.record_cost(response_cost_usd)
         return not self.over_budget and response_cost_usd <= max(0.0, self.config.budget_usd - before)
 
     def select(self, model: str, estimated_tokens: int, *, allow_truncate: bool = False) -> Decision:
-        """Choose primary, fallback, truncated, or disabled execution in that order."""
+        """按主模型、fallback、截断、禁用 LLM 的顺序选择执行方案。"""
         if self.over_budget:
             return Decision(model=None, allow_llm=False, reason="budget_exceeded")
         remaining = self.config.budget_usd - self.spent_usd - self.reserved_usd
@@ -95,8 +95,7 @@ class BudgetController:
                 return self._truncate_or_disable(fallback, remaining, estimated_tokens)
             return Decision(model=None, allow_llm=False, reason="fallback_over_budget")
 
-        # Truncation is useful when some budget remains; reserve at least one
-        # token and make the resulting decision explicit for the pipeline.
+        # 仍有少量预算时尝试截断，并把上限明确交给流水线执行。
         rate = self.pricing.get(model, self.pricing.get("small", 0.01))
         if allow_truncate and remaining > 0 and rate > 0:
             max_tokens = int(remaining / rate * 1000) - self.config.completion_tokens

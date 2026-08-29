@@ -1,4 +1,4 @@
-"""Resumable, secret-safe review orchestration."""
+"""可恢复且安全脱敏的 Review 编排流水线。"""
 
 from __future__ import annotations
 
@@ -52,9 +52,8 @@ class ReviewPipeline:
         return trace_id
 
     def _reclaim_orphan_reservations(self, run_id: str) -> list[str]:
-        # A reservation without a matching checkpoint cannot be safely
-        # attributed to a live worker, so keep the money reserved and surface
-        # a manual-recovery diagnostic instead of guessing from elapsed time.
+        # 没有关联 checkpoint 的 reservation 无法确认是否仍由工作进程使用，
+        # 因此保留预算并提示人工恢复，不根据经过时间做危险猜测。
         known_tokens = {
             item["payload"].get("token")
             for item in self.store.list_checkpoints(run_id, "rules:")
@@ -69,7 +68,7 @@ class ReviewPipeline:
         return degradations
 
     def _run_mdr_rules(self, run_id: str, request: ChangeRequest, sanitized_diff: str, diff_hash: str, config: RunConfig) -> tuple[list[Finding], list[str]]:
-        """Run each language's MDR batches while preserving recovery and audit links."""
+        """执行各语言 MDR 批次，同时维护恢复状态和审计关联。"""
         if self.rules is None:
             return [], []
         controller = BudgetController(config)
@@ -78,8 +77,7 @@ class ReviewPipeline:
         degradations: list[str] = self._reclaim_orphan_reservations(run_id)
         language_diffs = split_diff_by_language(sanitized_diff)
         valid_stages: set[str] = set()
-        # Build the expected stage set before executing batches. This lets us
-        # mark removed rules or files as superseded and release their budget.
+        # 先计算本次应存在的阶段，再把已删除的规则或文件标为过期并释放预算。
         for language_diff in language_diffs:
             rules = self.rules.applicable(language_diff.language)
             if language_diff.language == "unknown" and not rules:
@@ -120,8 +118,7 @@ class ReviewPipeline:
 
                 reservation_key = checkpoint_key + ":reservation"
                 reservation_state = self.store.get_checkpoint(run_id, reservation_key)
-                # The reservation checkpoint is the durable hand-off between
-                # budget accounting and the external provider call.
+                # reservation checkpoint 是预算记账和外部模型请求之间的持久化交接点。
                 if reservation_state and reservation_state.get("status") in ("pending", "in_flight", "completed") and all(reservation_state.get(key) == value for key, value in expected.items()):
                     if reservation_state.get("status") == "completed" and reservation_state.get("findings") is not None:
                         recovered_findings = [Finding.from_dict(item) for item in reservation_state.get("findings", [])]
@@ -130,13 +127,11 @@ class ReviewPipeline:
                         continue
                     token = reservation_state.get("token")
                     db_reservation = self.store.get_reservation(run_id, token) if token else None
-                    # Settlement is durable even if trace/checkpoint writes were
-                    # interrupted. Rebuild findings from the atomically stored
-                    # provider response instead of emitting an empty result.
+                    # 即使 trace 或 checkpoint 写入被中断，结算仍是持久化的；
+                    # 从原子保存的模型回复重建 finding，不能静默返回空结果。
                     if db_reservation and db_reservation.get("status") == "completed":
-                        # The provider result is stored transactionally with
-                        # settlement, so it is the source of truth if the
-                        # process died before trace/checkpoint writes finished.
+                        # 模型回复与结算在同一事务中保存；进程若随后退出，
+                        # 这里以数据库结果为准，避免重复请求并恢复 finding。
                         result = db_reservation.get("result") or {}
                         response_text = result.get("response", "")
                         parsed_items = result.get("parsed_findings") or []
@@ -185,8 +180,7 @@ class ReviewPipeline:
                         continue
 
                 prompt = build_rule_prompt(batch)
-                # MDR batches have their own budget decision so organization
-                # rules remain auditable even when generic review is degraded.
+                # MDR 批次独立做预算决策，保证组织规则在其他 review 降级时仍可审计。
                 decision = controller.select(config.model, estimate_tokens(prompt), allow_truncate=True)
                 if decision.reason != "within_budget":
                     degradations.append(decision.reason)
@@ -195,8 +189,7 @@ class ReviewPipeline:
                     self.store.save_checkpoint(run_id, checkpoint_key, {**expected, "findings": [], "batch_trace_id": trace_id, "finding_trace_ids": []})
                     continue
                 reservation = controller.reserve(decision.model, decision.estimated_tokens or estimate_tokens(prompt))
-                # Write pending before the DB reservation: a crash at either
-                # boundary can then be reconciled deterministically on resume.
+                # 先写 pending 再创建数据库 reservation；任一边界崩溃后都能确定性对账。
                 self.store.save_checkpoint(run_id, reservation_key, {**expected, "status": "pending", "token": reservation.token if reservation else "", "reserved_usd": reservation.reserved_usd if reservation else 0.0, "model": decision.model})
                 if reservation is None or not self.store.reserve_budget(run_id, reservation.token, reservation.reserved_usd):
                     if reservation is not None:
@@ -208,8 +201,7 @@ class ReviewPipeline:
                 self.store.save_checkpoint(run_id, reservation_key, {**expected, "status": "in_flight", "token": reservation.token, "reserved_usd": reservation.reserved_usd, "model": decision.model})
                 started = time.monotonic()
                 try:
-                    # Only sanitized, bounded prompt text reaches the model;
-                    # all provider responses are parsed as untrusted JSON.
+                    # 模型只接收已脱敏且受长度限制的 prompt；供应商回复一律按不可信 JSON 解析。
                     response = self.llm.review(prompt, decision.model, max_chars=decision.max_chars, max_tokens=decision.max_tokens or config.completion_tokens)
                     parsed = parse_rule_response(response.text, batch)
                     accepted = controller.commit(reservation, response.cost_usd)
@@ -250,7 +242,7 @@ class ReviewPipeline:
         self.store.update_run(run_id, status="failed")
 
     def run(self, url_or_run_id: str) -> ReviewResult:
-        """Resume a run by ID or create one, then execute only missing stages."""
+        """按 ID 恢复已有 run，或创建新 run，并只执行缺失阶段。"""
         try:
             run = self.store.get_run(url_or_run_id)
             run_id = url_or_run_id
@@ -307,10 +299,17 @@ class ReviewPipeline:
             tool_findings = [Finding.from_dict(item) for item in tools_payload.get("findings", [])]
 
             current_stage = "review"
-            mdr_findings, mdr_degradations = self._run_mdr_rules(run_id, request, sanitized_diff, diff_hash, config)
+            mdr_findings, mdr_degradations = ([], [])
+            if config.review_mode in ("mdr_only", "hybrid"):
+                mdr_findings, mdr_degradations = self._run_mdr_rules(run_id, request, sanitized_diff, diff_hash, config)
 
             review_payload = self.store.get_checkpoint(run_id, "review")
-            if review_payload is None:
+            if config.review_mode == "mdr_only":
+                # 严格模式记录空的通用阶段，保持恢复状态完整，同时保证不会发起自由形式请求。
+                if review_payload is None:
+                    review_payload = {"findings": [], "degradations": [], "mode": "mdr_only"}
+                    self.store.save_checkpoint(run_id, "review", review_payload)
+            elif review_payload is None:
                 current_stage = "review"
                 llm_findings: list[Finding] = []
                 degradations: list[str] = []

@@ -1,4 +1,4 @@
-"""OpenAI-compatible and deterministic LLM clients."""
+"""OpenAI 兼容客户端和离线确定性 LLM 客户端。"""
 
 from __future__ import annotations
 
@@ -9,14 +9,13 @@ from typing import Protocol
 from .models import LLMResponse
 
 
-# USD per 1K tokens. These conservative defaults can be overridden by callers
-# through BudgetController pricing; responses with provider-reported costs are
-# still represented using the same estimates.
+# 默认单位为每 1,000 token 的美元 blended 费率；调用方可通过 BudgetController
+# 覆盖模型价格，供应商未返回用量时也使用同一套估算方法。
 MODEL_COST_PER_1K = {"large": 0.03, "small": 0.01}
 
 
 class LLMClient(Protocol):
-    """Minimal provider contract used by generic and MDR review stages."""
+    """通用 review 和 MDR review 共用的最小模型提供方接口。"""
 
     def review(self, prompt: str, model: str, *, max_chars: int | None = None, max_tokens: int | None = None) -> LLMResponse: ...
 
@@ -33,7 +32,7 @@ def estimate_tokens(text: str) -> int:
 
 
 class OpenAICompatibleClient:
-    """OpenAI Chat Completions client for OneAPI and compatible gateways."""
+    """面向 OneAPI 及其他兼容网关的 OpenAI Chat Completions 客户端。"""
 
     def __init__(self, base_url: str, api_key: str, timeout: float = 30.0,
                  pricing: dict[str, float] | None = None):
@@ -43,7 +42,7 @@ class OpenAICompatibleClient:
         self.pricing = pricing or MODEL_COST_PER_1K
 
     def review(self, prompt: str, model: str, *, max_chars: int | None = None, max_tokens: int | None = None) -> LLMResponse:
-        """Send only the bounded prompt and normalize provider usage into LLMResponse."""
+        """只发送受限 prompt，并把供应商用量统一转换为 LLMResponse。"""
         if max_chars is not None:
             prompt = prompt[:max_chars]
         endpoint = self.base_url if self.base_url.endswith("/chat/completions") else self.base_url + "/chat/completions"
@@ -83,12 +82,12 @@ class OpenAICompatibleClient:
 
 
 class DeterministicClient:
-    """Offline client used for reproducible tests and secret-safe demonstrations."""
+    """用于可重复测试和安全演示的离线客户端。"""
 
     def review(self, prompt: str, model: str, *, max_chars: int | None = None, max_tokens: int | None = None) -> LLMResponse:
         if max_chars is not None:
             prompt = prompt[:max_chars]
-        # Stable output keeps offline runs reproducible and avoids network use.
+        # 固定输出保证离线运行可重复，并确保不会访问网络。
         if "MDR_RULE_BATCH" in prompt:
             return LLMResponse(text='{"findings": []}', model=model)
         return LLMResponse(text=f"Offline review ({model}): {prompt}", model=model)

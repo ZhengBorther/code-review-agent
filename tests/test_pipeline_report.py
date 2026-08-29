@@ -42,7 +42,7 @@ class _OverBudgetClient:
 def test_provider_over_budget_response_is_not_success(tmp_path: Path):
     fixture = tmp_path / "change.diff"
     fixture.write_text("diff --git a/app.py b/app.py\n+pass\n", encoding="utf-8")
-    config = RunConfig(url="local://fixture", budget_usd=0.01, model="small", fallback_model="small")
+    config = RunConfig(url="local://fixture", budget_usd=0.01, model="small", fallback_model="small", review_mode="hybrid")
     result = ReviewPipeline(StateStore(tmp_path / "state.db"), LocalDiffAdapter(fixture), ToolRegistry(), _OverBudgetClient(), config).run("local://fixture")
     assert not any(f.title == "模型审查建议" for f in result.findings)
     assert any("预算" in f.title for f in result.findings)
@@ -62,7 +62,7 @@ def test_inflight_reservation_prevents_duplicate_call_after_restart(tmp_path: Pa
     fixture = tmp_path / "change.diff"
     fixture.write_text("diff --git a/app.py b/app.py\n+pass\n", encoding="utf-8")
     db = tmp_path / "state.db"
-    config = RunConfig(url="local://fixture", budget_usd=1.0, offline=True)
+    config = RunConfig(url="local://fixture", budget_usd=1.0, offline=True, review_mode="hybrid")
     store = StateStore(db)
     run_id = store.create_run(config)
     first_client = _FailingClient()
@@ -75,6 +75,18 @@ def test_inflight_reservation_prevents_duplicate_call_after_restart(tmp_path: Pa
     result = ReviewPipeline(StateStore(db), LocalDiffAdapter(fixture), ToolRegistry(), second_client, config).run(run_id)
     assert second_client.calls == 0
     assert any("中断" in f.title for f in result.findings)
+
+
+def test_default_mdr_only_mode_skips_generic_llm(tmp_path: Path):
+    fixture = tmp_path / "change.diff"
+    fixture.write_text("diff --git a/app.py b/app.py\n+password = 'value'\n", encoding="utf-8")
+    client = _FailingClient()
+    result = ReviewPipeline(
+        StateStore(tmp_path / "state.db"), LocalDiffAdapter(fixture),
+        ToolRegistry(), client, RunConfig(url="local://fixture", offline=True),
+    ).run("local://fixture")
+    assert client.calls == 0
+    assert not any(f.title == "模型审查建议" for f in result.findings)
 
 
 def test_report_redacts_metadata_and_shows_trace_usage(tmp_path: Path):
