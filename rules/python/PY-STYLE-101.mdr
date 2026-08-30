@@ -1,0 +1,16 @@
+---
+id: PY-STYLE-101
+title: Python 函数业务参数超过4个时必须使用参数对象
+language: python
+domains: [STYLE]
+severity: warning
+prompt_hint: >
+  检查新增或修改的 Python 函数定义。业务参数超过4个时，应使用 dataclass、TypedDict 或 Params 对象封装，避免调用约定分散在长参数列表中。
+deprecated: false
+---
+
+# PY-STYLE-101 Python 函数业务参数超过4个时必须使用参数对象
+
+## 规则说明
+
+函数参数过多时使用参数对象，以保证调用方和被调用方的字段语义一致。

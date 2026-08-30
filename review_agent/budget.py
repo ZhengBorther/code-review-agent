@@ -19,6 +19,7 @@ class Decision:
     estimated_tokens: int | None = None
     reason: str = ""
 
+
 @dataclass(frozen=True)
 class Reservation:
     token: str

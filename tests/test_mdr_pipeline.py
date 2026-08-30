@@ -79,6 +79,21 @@ class OneLanguageFailsClient(JsonRuleClient):
         return super().review(prompt, model, **kwargs)
 
 
+class InvalidThenValidClient(JsonRuleClient):
+    def __init__(self):
+        super().__init__({"findings": [{
+            "rule_id": "GO-STYLE-001", "file_path": "internal/user.go",
+            "line_start": 1, "title": "参数过多", "body": "请使用结构体封装参数",
+            "evidence": "函数参数超过4个",
+        }]})
+
+    def review(self, prompt, model, **kwargs):
+        self.rule_calls += 1
+        if self.rule_calls == 1:
+            return LLMResponse(text="", model=model, cost_usd=0.0)
+        return LLMResponse(text=json.dumps(self.payload), model=model, cost_usd=0.0)
+
+
 def test_pipeline_runs_independent_language_batches_concurrently(tmp_path):
     client = ConcurrentLanguageClient()
     go_rule = make_rule()
@@ -175,6 +190,19 @@ def test_rule_checkpoint_reuses_hash_and_reruns_changed_rule(tmp_path):
     assert client.rule_calls == 2
 
 
+def test_invalid_mdr_response_is_retryable_on_resume(tmp_path):
+    client = InvalidThenValidClient()
+    pipeline = pipeline_with_rules(tmp_path, GO_DIFF, (make_rule(),), client)
+    first = pipeline.run("local://invalid-then-valid")
+    assert client.rule_calls == 1
+    assert not first.findings
+    assert pipeline.store.get_checkpoint(first.run_id, "rules:go:0") is None
+
+    resumed = pipeline_with_rules(tmp_path, GO_DIFF, (make_rule(),), client).run(first.run_id)
+    assert client.rule_calls == 2
+    assert resumed.findings
+
+
 def test_python_rule_change_does_not_rerun_go_batch(tmp_path):
     client = LanguageCountingJsonClient()
     go_rule, py_rule = make_rule(), make_rule("PY-STYLE-001", "python")
@@ -195,8 +223,27 @@ def test_mdr_finding_is_advisory_and_links_batch_trace(tmp_path):
     assert finding.confidence == "advisory"
     assert trace["kind"] == "mdr_finding"
     assert trace["parent_trace_id"].startswith("trace-")
+    assert trace["prompt"]
+    assert trace["response"]
+    assert trace["model"] == "large"
+    parent = next(item for item in result.traces if item["trace_id"] == trace["parent_trace_id"])
+    assert trace["prompt_tokens"] == parent["prompt_tokens"]
+    assert trace["completion_tokens"] == parent["completion_tokens"]
     assert "规则: GO-STYLE-001" in result.markdown
     assert "严重度: warning" in result.markdown
+
+
+def test_mdr_batch_trace_keeps_redacted_prompt_json_valid(tmp_path):
+    client = JsonRuleClient({"findings": []})
+    rule = make_rule(
+        prompt_hint='检查 password="abcdefghijklmnopqrstuvwxyz1234567890"',
+        body='禁止 logger.info("password=%s", password)',
+    )
+    result = pipeline_with_rules(tmp_path, GO_DIFF, (rule,), client).run("local://trace-json")
+    trace = next(item for item in result.traces if item["kind"] == "mdr_batch")
+    rules_line = next(line for line in trace["prompt"].splitlines() if line.startswith("RULES:"))
+    payload = json.loads(rules_line.removeprefix("RULES:"))
+    assert payload[0]["rule_id"] == "GO-STYLE-001"
 
 
 def test_mdr_recovery_releases_unresolved_reservation(tmp_path):
@@ -222,7 +269,11 @@ def test_mdr_recovery_releases_unresolved_reservation(tmp_path):
 def test_unknown_language_emits_mdr_diagnostic_trace(tmp_path):
     diff = "diff --git a/data.xyz b/data.xyz\n--- a/data.xyz\n+++ b/data.xyz\n+value\n"
     result = pipeline_with_rules(tmp_path, diff, (make_rule(),), JsonRuleClient({"findings": []})).run("local://unknown")
-    assert any(trace["kind"] == "mdr_batch" and "unknown" in trace.get("error", "") for trace in result.traces)
+    trace = next(trace for trace in result.traces if trace["kind"] == "mdr_batch" and "unknown" in trace.get("error", ""))
+    assert trace["prompt"] == "未识别语言，未调用模型；原始 diff 仅用于诊断。"
+    assert trace["response"] == diff
+    assert trace["metadata"]["trace_role"] == "diagnostic_diff"
+    assert "诊断原始 diff" in result.markdown
 
 
 def test_unknown_language_runs_common_rule(tmp_path):

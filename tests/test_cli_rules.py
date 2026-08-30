@@ -6,7 +6,7 @@ from review_agent.storage import StateStore
 
 
 EXAMPLE_CONFIG = Path(__file__).parents[1] / "conf" / "review-agent.toml"
-EXAMPLE_RULES = Path(__file__).parents[1] / "examples" / "rules"
+EXAMPLE_RULES = Path(__file__).parents[1] / "rules"
 GO_MANY_PARAMETERS_DIFF = Path(__file__).parent / "fixtures" / "go-many-parameters.diff"
 
 

@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 
 from review_agent.adapters import LocalDiffAdapter
@@ -81,3 +82,24 @@ def test_pipeline_applies_max_diff_chars(tmp_path: Path):
     result = ReviewPipeline(StateStore(tmp_path / "state.db"), LocalDiffAdapter(fixture), ToolRegistry(), DeterministicClient(), config).run("local://fixture")
     review = StateStore(tmp_path / "state.db").get_checkpoint(result.run_id, "review")
     assert result.run_id and review is not None
+
+
+def test_pipeline_logs_key_stages_without_diff_content(tmp_path: Path, caplog):
+    fixture = tmp_path / "change.diff"
+    fixture.write_text(
+        "diff --git a/app.py b/app.py\n+password = 'never-log-this-value'\n",
+        encoding="utf-8",
+    )
+    caplog.set_level(logging.INFO, logger="review_agent.pipeline")
+    ReviewPipeline(
+        StateStore(tmp_path / "state.db"), LocalDiffAdapter(fixture),
+        ToolRegistry(), DeterministicClient(),
+        RunConfig(url="local://logging", budget_usd=1.0, offline=True),
+    ).run("local://logging")
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert "评审开始" in messages
+    for stage in ("fetch", "sanitize", "tools", "review", "render"):
+        assert f"阶段开始 stage={stage}" in messages
+        assert f"阶段完成 stage={stage}" in messages
+    assert "评审完成" in messages
+    assert "never-log-this-value" not in messages

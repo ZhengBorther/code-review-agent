@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import json
+import logging
+import time
 import urllib.request
 from typing import Protocol
 
 from .models import LLMResponse
+
+
+logger = logging.getLogger(__name__)
 
 
 # 默认单位为每 1,000 token 的美元 blended 费率；调用方可通过 BudgetController
@@ -46,7 +51,15 @@ class OpenAICompatibleClient:
         if max_chars is not None:
             prompt = prompt[:max_chars]
         endpoint = self.base_url if self.base_url.endswith("/chat/completions") else self.base_url + "/chat/completions"
-        payload = {"model": model, "messages": [{"role": "user", "content": prompt}]}
+        # MDR 要求模型直接返回 JSON；关闭思考输出，避免推理内容耗尽
+        # completion token 后 message.content 为空，导致 JSON 解析失败。
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "enable_thinking": False,
+            "stream": False,
+            "response_format": {"type": "json_object"},
+        }
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
         request = urllib.request.Request(
@@ -55,10 +68,15 @@ class OpenAICompatibleClient:
             headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
             method="POST",
         )
+        started = time.monotonic()
+        logger.info("LLM 请求开始 model=%s endpoint=%s prompt_chars=%d max_tokens=%s",
+                    model, endpoint, len(prompt), max_tokens if max_tokens is not None else "default")
         with urllib.request.urlopen(request, timeout=self.timeout) as response:
             data = json.loads(response.read().decode("utf-8"))
         try:
-            text = data["choices"][0]["message"]["content"]
+            choice = data["choices"][0]
+            text = choice["message"]["content"]
+            finish_reason = choice.get("finish_reason", "")
         except (KeyError, IndexError, TypeError) as exc:
             raise ValueError("invalid chat-completions response") from exc
         usage = data.get("usage") or {}
@@ -71,6 +89,9 @@ class OpenAICompatibleClient:
         )
         prompt_tokens = int(usage.get("prompt_tokens") or estimate_tokens(prompt))
         completion_tokens = int(usage.get("completion_tokens") or estimate_tokens(str(text)))
+        logger.info("LLM 响应完成 model=%s finish_reason=%s content_chars=%d prompt_tokens=%d completion_tokens=%d duration_ms=%d usage_known=%s",
+                    model, finish_reason, len(str(text)), prompt_tokens, completion_tokens,
+                    int((time.monotonic() - started) * 1000), usage_known)
         return LLMResponse(
             text=str(text),
             model=model,

@@ -21,6 +21,22 @@ def test_multiple_go_rules_share_one_batch_and_prompt_is_redacted():
     assert prompt.startswith("MDR_RULE_BATCH\nLANGUAGE: go")
 
 
+def test_redacted_rule_payload_remains_valid_json():
+    language_diff = LanguageDiff(
+        language="go", files=("internal/user.go",), diff=GO_DIFF,
+        diff_hash="hash-go",
+    )
+    rule = make_rule(
+        prompt_hint='检查 password="abcdefghijklmnopqrstuvwxyz1234567890"',
+        body='日志示例 logger.info("password=%s", password)，不得输出完整凭据。',
+    )
+    prompt = build_rule_prompt(build_rule_batches(language_diff, (rule,), 20_000)[0])
+    rules_line = next(line for line in prompt.splitlines() if line.startswith("RULES:"))
+    payload = json.loads(rules_line.removeprefix("RULES:"))
+    assert payload[0]["rule_id"] == "GO-STYLE-001"
+    assert "abcdefghijklmnopqrstuvwxyz1234567890" not in rules_line
+
+
 def test_batches_split_rules_by_stable_id_when_prompt_is_oversized():
     language_diff = LanguageDiff("go", ("a.go",), GO_DIFF, "hash-go")
     rules = (make_rule("GO-Z", prompt_hint="z" * 100), make_rule("GO-A", prompt_hint="a" * 100))
@@ -54,6 +70,18 @@ def test_parser_accepts_known_rule_and_forces_advisory():
     assert parsed.findings[0].rule_id == "GO-STYLE-001"
 
 
+def test_parser_accepts_provider_top_level_finding_array():
+    go_batch = build_rule_batches(
+        LanguageDiff("go", ("internal/user.go",), GO_DIFF, "hash-go"),
+        (make_rule(),), 20_000)[0]
+    parsed = parse_rule_response(json.dumps([{
+        "rule_id": "GO-STYLE-001", "file_path": "internal/user.go",
+        "line_start": 12, "title": "too many parameters",
+        "body": "use CreateUserParams", "evidence": "five parameters",
+    }]), go_batch)
+    assert len(parsed.findings) == 1
+
+
 def test_parser_rejects_unknown_rule_and_file():
     go_batch = build_rule_batches(
         LanguageDiff("go", ("internal/user.go",), GO_DIFF, "hash-go"),
@@ -73,7 +101,7 @@ def test_parser_rejects_markdown_fences_and_invalid_shape():
     batch = build_rule_batches(LanguageDiff("go", ("a.go",), GO_DIFF, "h"), (make_rule(),), 20_000)[0]
     fenced = "```json\n{" + '"findings": []' + "}\n```"
     assert parse_rule_response(fenced, batch).findings == ()
-    assert parse_rule_response("[]", batch).rejections
+    assert parse_rule_response("[{}]", batch).rejections
 
 
 def test_parser_rejects_unbounded_findings_and_reversed_location():

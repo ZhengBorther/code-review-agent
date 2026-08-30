@@ -1,8 +1,19 @@
 import pytest
+from pathlib import Path
 
 from review_agent.config import load_rules_config
 from review_agent.rules import MdrRuleLoader, RuleLoadError
 from tests.rule_fixtures import VALID_GO_RULE
+
+
+def test_repository_contains_python_sensitive_output_rule():
+    rules_dir = Path(__file__).parents[1] / "rules"
+    loaded = MdrRuleLoader().load(rules_dir)
+    rule = next(item for item in loaded if item.id == "PY-SEC-001")
+    assert rule.language == "python"
+    assert rule.severity == "error"
+    assert "password" in rule.prompt_hint.lower()
+    assert "print" in rule.prompt_hint.lower()
 
 def test_loads_valid_mdr_and_merges_toml_with_cli_directories(tmp_path):
     rules = tmp_path / "rules"

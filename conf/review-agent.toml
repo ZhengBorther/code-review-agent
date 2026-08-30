@@ -1,19 +1,22 @@
 # 默认配置：运行 `python3 -m review_agent review <PR/MR_URL>` 时自动读取。
-# 不要把真实 token 提交到仓库；请使用环境变量或本地 chmod 600 的覆盖文件。
+# 可以在本机直接填写 token；真实 token 不要提交到仓库，并建议 chmod 600 本文件。
 
 [review]
 mode = "mdr_only"
 budget_usd = 10.0
 max_diff_chars = 12000
-completion_tokens = 512
+# 结构化 MDR 输出默认使用 Codex 配置中的非思考模型，避免空回复。
+completion_tokens = 1024
 max_concurrency = 2
 output = "../review.md"
 state_dir = "../.review-state"
 
 [llm]
-base_url = "https://oneapi.example/v1"
-model = "qwen-plus"
-fallback_model = "qwen-turbo"
+# 在本机填写 OneAPI token；真实 token 不要提交到 Git。
+base_url = ""
+api_key = ""
+model = "gpt-5.6-sol"
+fallback_model = "gpt-5.6-sol"
 timeout_seconds = 120
 
 [llm.pricing]
@@ -21,7 +24,15 @@ timeout_seconds = 120
 qwen-plus = 0.003
 qwen-turbo = 0.001
 
+[github]
+# 私有 GitHub 仓库需要填写；公开仓库可留空。
+# token = "replace-with-your-github-token"
+
+[gitlab]
+# 私有 GitLab 仓库需要填写；公开仓库可留空。
+# token = "replace-with-your-gitlab-token"
+
 [rules]
-directories = ["../examples/rules"]
+directories = ["../rules"]
 enabled_languages = []
 disabled_rules = []

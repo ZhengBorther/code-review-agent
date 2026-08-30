@@ -13,12 +13,14 @@
 
 要求 Python 3.11+：
 
+默认配置文件是 `conf/review-agent.toml`，因此首次运行只需要提供 PR/MR 链接：
+
 ```bash
 python3 -m pip install -e .
-python3 -m review_agent review \
-  https://github.com/org/repo/pull/123 \
-  --config conf/review-agent.toml
+python3 -m review_agent review https://github.com/org/repo/pull/123
 ```
+
+运行前在 `conf/review-agent.toml` 的 `[llm]` 中填写 `api_key`；私有仓库再填写 `[github].token` 或 `[gitlab].token`。真实 token 只保存在本机，不要提交到 Git，并建议执行 `chmod 600 conf/review-agent.toml`。
 
 PR/MR 链接是正式输入方式。`--diff-file` 只用于本地离线、断网或固定 diff 复现：
 
@@ -26,7 +28,7 @@ PR/MR 链接是正式输入方式。`--diff-file` 只用于本地离线、断网
 python3 -m review_agent review \
   --diff-file tests/fixtures/go-many-parameters.diff \
   --config conf/review-agent.toml \
-  --rules-dir examples/rules \
+  --rules-dir rules \
   --offline
 ```
 
@@ -37,6 +39,10 @@ python3 -m review_agent review \
 - [MDR 规则与新增方式](docs/rules.md)
 - [运行、预算、恢复与安全](docs/operations.md)
 - [离线评测和验证](docs/evaluation.md)
+
+配置文件中的相对路径（例如 `output`、`state_dir` 和 `rules.directories`）均相对 `conf/review-agent.toml` 所在目录解析；命令行参数仍可覆盖配置。
+
+运行日志默认输出到 stderr；使用 `--log-level DEBUG` 可查看 checkpoint、批次和外部请求的诊断信息。日志不会打印 token、diff、prompt 或模型回复正文。
 
 ## 开发验证
 

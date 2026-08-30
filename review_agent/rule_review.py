@@ -149,27 +149,35 @@ def _fit_batch(batch: RuleBatch, limit: int) -> RuleBatch:
 
 def build_rule_prompt(batch: RuleBatch) -> str:
     """渲染并脱敏一个只允许 JSON 输出的语言批次 prompt。"""
+    def sanitized(value: str) -> str:
+        return redact_secrets(value).text
+
     rules = []
     for rule in batch.rules:
         rules.append({
             "rule_id": rule.id,
-            "title": rule.title,
+            "title": sanitized(rule.title),
             "severity": rule.severity,
             "domains": list(rule.domains),
             "language": rule.language,
-            "prompt_hint": rule.prompt_hint,
-            "body": rule.body,
+            "prompt_hint": sanitized(rule.prompt_hint),
+            "body": sanitized(rule.body),
         })
     payload = json.dumps(rules, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    files = json.dumps(
+        [sanitized(file_path) for file_path in batch.files],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
     raw = (
         "MDR_RULE_BATCH\n"
         f"LANGUAGE: {batch.language.lower()}\n"
         "JSON only; no Markdown fences/prose. findings fields: rule_id,file_path,line_start,title,body,evidence.\n"
         "RULES:" + payload + "\n"
-        "FILES:" + json.dumps(list(batch.files), ensure_ascii=False, separators=(",", ":")) + "\n"
-        "DIFF:" + batch.diff
+        "FILES:" + files + "\n"
+        "DIFF:" + sanitized(batch.diff)
     )
-    return redact_secrets(raw).text
+    return raw
 
 
 def parse_rule_response(text: str, batch: RuleBatch) -> RuleParseResult:
@@ -177,7 +185,16 @@ def parse_rule_response(text: str, batch: RuleBatch) -> RuleParseResult:
     if not isinstance(text, str) or "```" in text:
         return RuleParseResult(rejections=("response must be JSON without Markdown fences",))
     try:
-        payload = MdrResponsePayload.model_validate_json(text)
+        # 部分兼容网关会把 findings 数组直接作为顶层 JSON 返回；统一包装
+        # 后仍由同一套严格 Pydantic schema 校验字段和数量。
+        raw_payload = json.loads(text)
+        normalized_text = json.dumps(
+            {"findings": raw_payload} if isinstance(raw_payload, list) else raw_payload,
+            ensure_ascii=False,
+        )
+        payload = MdrResponsePayload.model_validate_json(normalized_text)
+    except json.JSONDecodeError as exc:
+        return RuleParseResult(rejections=(f"response: Invalid JSON: {exc.msg}",))
     except ValidationError as exc:
         # Do not copy Pydantic's input_value into trace metadata: it may contain
         # secrets or an entire untrusted model response.

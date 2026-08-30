@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import asyncio
+import json
+import logging
 import threading
 import time
 from dataclasses import dataclass, replace
@@ -22,8 +24,30 @@ from .storage import StateStore
 from .tools import ToolRegistry
 
 
+logger = logging.getLogger(__name__)
+
+
 def _hash(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _redact_json_response(value: str) -> str:
+    """按字段脱敏 JSON 回复，避免对序列化文本二次替换破坏 JSON。"""
+    try:
+        payload = json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return redact_secrets(value).text
+
+    def sanitize(item: Any) -> Any:
+        if isinstance(item, str):
+            return redact_secrets(item).text
+        if isinstance(item, list):
+            return [sanitize(part) for part in item]
+        if isinstance(item, dict):
+            return {key: sanitize(part) for key, part in item.items()}
+        return item
+
+    return json.dumps(sanitize(payload), ensure_ascii=False, separators=(",", ":"))
 
 
 @dataclass
@@ -50,11 +74,13 @@ class ReviewPipeline:
         self.rules = rules
         self._lease_token: str | None = None
 
-    def _trace(self, run_id: str, *, kind: str, input_hash: str = "", prompt: str = "", response: str = "", model: str = "", tool_name: str = "", prompt_tokens: int = 0, completion_tokens: int = 0, cost_usd: float = 0.0, duration_ms: int = 0, error: str = "", parent_trace_id: str = "", rule_id: str = "", ruleset_hash: str = "", metadata: dict[str, Any] | None = None) -> str:
+    def _trace(self, run_id: str, *, kind: str, input_hash: str = "", prompt: str = "", response: str = "", model: str = "", tool_name: str = "", prompt_tokens: int = 0, completion_tokens: int = 0, cost_usd: float = 0.0, duration_ms: int = 0, error: str = "", parent_trace_id: str = "", rule_id: str = "", ruleset_hash: str = "", metadata: dict[str, Any] | None = None, prompt_is_sanitized: bool = False, response_is_json: bool = False) -> str:
         if self._lease_token:
             self.store.assert_run_lease(run_id, self._lease_token)
         trace_id = f"trace-{uuid4().hex}"
-        self.store.save_trace(TraceRecord(trace_id=trace_id, run_id=run_id, kind=kind, input_hash=input_hash, prompt=redact_secrets(prompt).text, response=redact_secrets(response).text, model=model, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, cost_usd=cost_usd, duration_ms=duration_ms, tool_name=tool_name, error=redact_secrets(error).text, parent_trace_id=parent_trace_id, rule_id=rule_id, ruleset_hash=ruleset_hash, metadata=metadata or {}))
+        safe_prompt = prompt if prompt_is_sanitized else redact_secrets(prompt).text
+        safe_response = _redact_json_response(response) if response_is_json else redact_secrets(response).text
+        self.store.save_trace(TraceRecord(trace_id=trace_id, run_id=run_id, kind=kind, input_hash=input_hash, prompt=safe_prompt, response=safe_response, model=model, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, cost_usd=cost_usd, duration_ms=duration_ms, tool_name=tool_name, error=redact_secrets(error).text, parent_trace_id=parent_trace_id, rule_id=rule_id, ruleset_hash=ruleset_hash, metadata=metadata or {}))
         return trace_id
 
     def _save_checkpoint(self, run_id: str, stage: str, payload: dict[str, Any], **kwargs: Any) -> None:
@@ -104,6 +130,9 @@ class ReviewPipeline:
         language_diffs = split_diff_by_language(sanitized_diff, config.profile_skip_globs)
         if language_filter is not None:
             language_diffs = tuple(item for item in language_diffs if item.language == language_filter)
+        logger.info("MDR 语言分组 run_id=%s languages=%s filter=%s",
+                    run_id, ",".join(item.language for item in language_diffs) or "none",
+                    language_filter or "none")
         valid_stages: set[str] = set()
         # 先计算本次应存在的阶段，再把已删除的规则或文件标为过期并释放预算。
         for language_diff in language_diffs:
@@ -158,9 +187,11 @@ class ReviewPipeline:
             rules = self.rules.applicable(language_diff.language)
             if language_diff.language == "unknown" and not rules:
                 self._trace(run_id, kind="mdr_batch", input_hash=language_diff.diff_hash,
+                            prompt="未识别语言，未调用模型；原始 diff 仅用于诊断。",
                             response=language_diff.diff, error="unknown_language",
                             metadata={"language": "unknown", "files": list(language_diff.files),
-                                      "rejections": ["unknown_language"]})
+                                      "rejections": ["unknown_language"],
+                                      "trace_role": "diagnostic_diff"})
                 degradations.append("unknown_language_skipped")
                 continue
             if not rules:
@@ -169,6 +200,9 @@ class ReviewPipeline:
             batches = build_rule_batches(language_diff, rules, max(256, config.max_diff_chars))
             for batch_index, batch in enumerate(batches):
                 checkpoint_key = f"rules:{batch.language}:{batch_index}"
+                logger.info("MDR 批次开始 language=%s batch=%d rules=%s files=%d",
+                            batch.language, batch_index,
+                            ",".join(rule.id for rule in batch.rules), len(batch.files))
                 expected = {"ruleset_hash": ruleset_hash, "diff_hash": batch.diff_hash}
                 for stale_stage in (checkpoint_key, checkpoint_key + ":reservation"):
                     stale_record = self.store.get_checkpoint_record(run_id, stale_stage)
@@ -177,8 +211,22 @@ class ReviewPipeline:
                         self.store.supersede_checkpoint(run_id, stale_stage)
                 saved = self.store.get_checkpoint(run_id, checkpoint_key)
                 if saved and all(saved.get(key) == value for key, value in expected.items()):
-                    findings.extend(Finding.from_dict(item) for item in saved.get("findings", []))
-                    continue
+                    # 旧版本可能把空响应和 JSON 解析拒绝误记为成功；恢复时
+                    # 检查 reservation 的原始结果，避免永久复用空报告。
+                    saved_reservation = self.store.get_checkpoint(run_id, checkpoint_key + ":reservation")
+                    saved_token = saved_reservation.get("token") if saved_reservation else None
+                    saved_result = self.store.get_reservation(run_id, saved_token) if saved_token else None
+                    result_payload = (saved_result or {}).get("result") or {}
+                    if not result_payload.get("rejections"):
+                        logger.info("MDR checkpoint 命中 language=%s batch=%d findings=%d",
+                                    batch.language, batch_index, len(saved.get("findings", [])))
+                        findings.extend(Finding.from_dict(item) for item in saved.get("findings", []))
+                        continue
+                    logger.warning("MDR checkpoint 失效 language=%s batch=%d reason=previous_response_rejected",
+                                   batch.language, batch_index)
+                    self.store.supersede_checkpoint(run_id, checkpoint_key)
+                    if saved_reservation:
+                        self.store.supersede_checkpoint(run_id, checkpoint_key + ":reservation")
 
                 reservation_key = checkpoint_key + ":reservation"
                 reservation_state = self.store.get_checkpoint(run_id, reservation_key)
@@ -209,6 +257,7 @@ class ReviewPipeline:
                                 model=result.get("model", reservation_state.get("model", "")),
                                 ruleset_hash=ruleset_hash, prompt_tokens=result.get("prompt_tokens", 0),
                                 completion_tokens=result.get("completion_tokens", 0), cost_usd=db_reservation.get("actual_usd", 0.0),
+                                prompt_is_sanitized=True, response_is_json=True,
                                 metadata={"rule_ids": [rule.id for rule in batch.rules], "recovery": True,
                                           "rejections": result.get("rejections", [])})
                             recovered_findings = []
@@ -216,8 +265,16 @@ class ReviewPipeline:
                             for item in raw_findings:
                                 finding = Finding.from_dict(item)
                                 finding_trace_id = self._trace(run_id, kind="mdr_finding", input_hash=recovered_input_hash,
-                                    response=finding.body, ruleset_hash=ruleset_hash, parent_trace_id=batch_trace_id,
-                                    rule_id=finding.rule_id, metadata={"batch_trace_id": batch_trace_id, "recovery": True})
+                                    prompt=recovered_prompt, response=response_text,
+                                    model=result.get("model", reservation_state.get("model", "")),
+                                    prompt_tokens=result.get("prompt_tokens", 0),
+                                    completion_tokens=result.get("completion_tokens", 0),
+                                    cost_usd=db_reservation.get("actual_usd", 0.0),
+                                    prompt_is_sanitized=True, response_is_json=True,
+                                    ruleset_hash=ruleset_hash, parent_trace_id=batch_trace_id,
+                                    rule_id=finding.rule_id,
+                                    metadata={"batch_trace_id": batch_trace_id, "recovery": True,
+                                              "finding_body": finding.body})
                                 recovered_findings.append(replace(finding, trace_id=finding_trace_id, confidence="advisory"))
                                 finding_trace_ids.append(finding_trace_id)
                             self._save_checkpoint(run_id, reservation_key, {**reservation_state, **expected, "status": "completed", "findings": [item.to_dict() for item in recovered_findings], "batch_trace_id": batch_trace_id, "finding_trace_ids": finding_trace_ids})
@@ -246,10 +303,13 @@ class ReviewPipeline:
                 prompt = build_rule_prompt(batch)
                 # MDR 批次独立做预算决策，保证组织规则在其他 review 降级时仍可审计。
                 decision = controller.select(config.model, estimate_tokens(prompt), allow_truncate=True)
+                logger.info("MDR 预算决策 language=%s batch=%d model=%s allow=%s reason=%s truncated=%s",
+                            batch.language, batch_index, decision.model or "none",
+                            decision.allow_llm, decision.reason or "none", decision.truncate)
                 if decision.reason != "within_budget":
                     degradations.append(decision.reason)
                 if not decision.allow_llm or not decision.model:
-                    trace_id = self._trace(run_id, kind="mdr_batch", input_hash=batch.diff_hash, prompt=prompt, model=decision.model or "", ruleset_hash=ruleset_hash, error=decision.reason or "llm_disabled", metadata={"rule_ids": [rule.id for rule in batch.rules], "rejections": [decision.reason or "llm_disabled"]})
+                    trace_id = self._trace(run_id, kind="mdr_batch", input_hash=batch.diff_hash, prompt=prompt, model=decision.model or "", ruleset_hash=ruleset_hash, error=decision.reason or "llm_disabled", prompt_is_sanitized=True, metadata={"rule_ids": [rule.id for rule in batch.rules], "rejections": [decision.reason or "llm_disabled"]})
                     self._save_checkpoint(run_id, checkpoint_key, {**expected, "findings": [], "batch_trace_id": trace_id, "finding_trace_ids": []})
                     continue
                 reservation = controller.reserve(decision.model, decision.estimated_tokens or estimate_tokens(prompt))
@@ -259,8 +319,10 @@ class ReviewPipeline:
                     if reservation is not None:
                         controller.commit(reservation, 0.0)
                     degradations.append("budget_exceeded")
-                    trace_id = self._trace(run_id, kind="mdr_batch", input_hash=batch.diff_hash, prompt=prompt, model=decision.model, ruleset_hash=ruleset_hash, error="budget_exceeded", metadata={"rule_ids": [rule.id for rule in batch.rules], "rejections": ["budget_exceeded"]})
+                    trace_id = self._trace(run_id, kind="mdr_batch", input_hash=batch.diff_hash, prompt=prompt, model=decision.model, ruleset_hash=ruleset_hash, error="budget_exceeded", prompt_is_sanitized=True, metadata={"rule_ids": [rule.id for rule in batch.rules], "rejections": ["budget_exceeded"]})
                     self._save_checkpoint(run_id, checkpoint_key, {**expected, "findings": [], "batch_trace_id": trace_id, "finding_trace_ids": []})
+                    logger.warning("MDR 批次跳过 language=%s batch=%d reason=budget_exceeded",
+                                   batch.language, batch_index)
                     continue
                 self._save_checkpoint(run_id, reservation_key, {**expected, "status": "in_flight", "token": reservation.token, "reserved_usd": reservation.reserved_usd, "model": decision.model})
                 started = time.monotonic()
@@ -277,25 +339,47 @@ class ReviewPipeline:
                          "completion_tokens": response.completion_tokens},
                         owner_token=self._lease_token,
                     )
-                    accepted = accepted and persisted_accepted
+                    response_valid = not parsed.rejections
+                    accepted = accepted and persisted_accepted and response_valid
                     rejection_messages = list(parsed.rejections)
+                    if not response_valid:
+                        rejection_messages.append("invalid_mdr_response")
                     if not accepted:
-                        rejection_messages.append("provider_cost_exceeded_budget")
+                        if response_valid:
+                            rejection_messages.append("provider_cost_exceeded_budget")
                     sent_prompt = prompt if decision.max_chars is None else prompt[:decision.max_chars]
-                    batch_trace_id = self._trace(run_id, kind="mdr_batch", input_hash=_hash(sent_prompt), prompt=sent_prompt, response=response.text, model=response.model or decision.model, ruleset_hash=ruleset_hash, prompt_tokens=response.prompt_tokens, completion_tokens=response.completion_tokens, cost_usd=response.cost_usd, duration_ms=int((time.monotonic() - started) * 1000), error="provider_cost_exceeded_budget" if not accepted else "", metadata={"rule_ids": [rule.id for rule in batch.rules], "rejections": rejection_messages, "diff_hash": batch.diff_hash})
+                    duration_ms = int((time.monotonic() - started) * 1000)
+                    batch_trace_id = self._trace(run_id, kind="mdr_batch", input_hash=_hash(sent_prompt), prompt=sent_prompt, response=response.text, model=response.model or decision.model, ruleset_hash=ruleset_hash, prompt_tokens=response.prompt_tokens, completion_tokens=response.completion_tokens, cost_usd=response.cost_usd, duration_ms=duration_ms, error="provider_cost_exceeded_budget" if not accepted else "", prompt_is_sanitized=True, response_is_json=True, metadata={"rule_ids": [rule.id for rule in batch.rules], "rejections": rejection_messages, "diff_hash": batch.diff_hash})
                     batch_findings: list[Finding] = []
                     finding_trace_ids: list[str] = []
                     if accepted:
                         for finding in parsed.findings:
-                            finding_trace_id = self._trace(run_id, kind="mdr_finding", input_hash=batch.diff_hash, response=finding.body, ruleset_hash=ruleset_hash, parent_trace_id=batch_trace_id, rule_id=finding.rule_id, metadata={"batch_trace_id": batch_trace_id})
+                            finding_trace_id = self._trace(run_id, kind="mdr_finding", input_hash=_hash(sent_prompt), prompt=sent_prompt,
+                                response=response.text, model=response.model or decision.model,
+                                prompt_tokens=response.prompt_tokens, completion_tokens=response.completion_tokens,
+                                cost_usd=response.cost_usd, duration_ms=duration_ms,
+                                prompt_is_sanitized=True, response_is_json=True,
+                                ruleset_hash=ruleset_hash, parent_trace_id=batch_trace_id,
+                                rule_id=finding.rule_id,
+                                metadata={"batch_trace_id": batch_trace_id, "finding_body": finding.body})
                             batch_findings.append(replace(finding, trace_id=finding_trace_id, confidence="advisory"))
                             finding_trace_ids.append(finding_trace_id)
+                    elif not response_valid:
+                        degradations.append("invalid_mdr_response")
                     else:
                         degradations.append("provider_cost_exceeded")
-                    self._save_checkpoint(run_id, reservation_key, {**expected, "status": "completed" if accepted else "rejected", "token": reservation.token, "reserved_usd": reservation.reserved_usd, "model": decision.model, "findings": [item.to_dict() for item in batch_findings], "batch_trace_id": batch_trace_id, "finding_trace_ids": finding_trace_ids})
-                    self._save_checkpoint(run_id, checkpoint_key, {**expected, "findings": [item.to_dict() for item in batch_findings], "batch_trace_id": batch_trace_id, "finding_trace_ids": finding_trace_ids})
+                    self._save_checkpoint(run_id, reservation_key, {**expected, "status": "completed" if accepted else "rejected", "token": reservation.token, "reserved_usd": reservation.reserved_usd, "model": decision.model, "findings": [item.to_dict() for item in batch_findings], "batch_trace_id": batch_trace_id, "finding_trace_ids": finding_trace_ids, "rejections": rejection_messages})
+                    if accepted:
+                        self._save_checkpoint(run_id, checkpoint_key, {**expected, "findings": [item.to_dict() for item in batch_findings], "batch_trace_id": batch_trace_id, "finding_trace_ids": finding_trace_ids})
                     findings.extend(batch_findings)
+                    logger.info("MDR 批次完成 language=%s batch=%d findings=%d rejections=%d accepted=%s cost_usd=%.6f duration_ms=%d",
+                                batch.language, batch_index, len(batch_findings),
+                                len(rejection_messages), accepted, response.cost_usd,
+                                int((time.monotonic() - started) * 1000))
                 except Exception as exc:
+                    logger.error("MDR 批次异常 language=%s batch=%d error_type=%s error=%s",
+                                 batch.language, batch_index, type(exc).__name__,
+                                 redact_secrets(str(exc)).text)
                     db_reservation = self.store.get_reservation(run_id, reservation.token)
                     if db_reservation and db_reservation.get("status") == "completed":
                         # provider 已完成且成本已结算，仅后续落盘失败；保留 completed
@@ -322,20 +406,28 @@ class ReviewPipeline:
         return findings, degradations
 
     def _fail(self, run_id: str, stage: str, exc: Exception) -> None:
+        logger.error("阶段失败 stage=%s run_id=%s error_type=%s error=%s",
+                     stage, run_id, type(exc).__name__, redact_secrets(str(exc)).text)
         self._save_checkpoint(run_id, stage, {"error": str(exc)}, status="failed")
         self._trace(run_id, kind="stage_error", error=f"{stage}: {exc}")
         self._update_run(run_id, status="failed")
 
     def run(self, url_or_run_id: str) -> ReviewResult:
         """按 ID 恢复已有 run，或创建新 run，并只执行缺失阶段。"""
+        resumed = True
         try:
             run = self.store.get_run(url_or_run_id)
             run_id = url_or_run_id
             config = RunConfig.from_dict(run["config"])
         except KeyError:
+            resumed = False
             config = replace(self.config, url=url_or_run_id)
             run_id = self.store.create_run(config)
             run = self.store.get_run(run_id)
+
+        logger.info("评审开始 run_id=%s resumed=%s adapter=%s mode=%s budget_usd=%.4f",
+                    run_id, resumed, type(self.adapter).__name__, config.review_mode,
+                    config.budget_usd)
 
         lease_token = str(uuid4())
         self._lease_token = lease_token
@@ -356,14 +448,20 @@ class ReviewPipeline:
         failure_recorded = False
         try:
             fetch = self.store.get_checkpoint(run_id, "fetch")
+            logger.info("阶段开始 stage=fetch run_id=%s checkpoint_hit=%s",
+                        run_id, fetch is not None)
             if fetch is None:
                 current_stage = "fetch"
                 request = self.adapter.fetch(config.url)
                 fetch = {"request": request.to_dict(), "diff_hash": _hash(request.diff)}
                 self._save_checkpoint(run_id, "fetch", fetch)
             request = ChangeRequest.from_dict(fetch["request"])
+            logger.info("阶段完成 stage=fetch run_id=%s source=%s diff_chars=%d",
+                        run_id, request.source, len(request.diff))
 
             sanitize = self.store.get_checkpoint(run_id, "sanitize")
+            logger.info("阶段开始 stage=sanitize run_id=%s checkpoint_hit=%s",
+                        run_id, sanitize is not None)
             if sanitize is None:
                 current_stage = "sanitize"
                 redacted = redact_secrets(request.diff)
@@ -378,8 +476,12 @@ class ReviewPipeline:
             sanitized_request = ChangeRequest.from_dict(sanitize["request"])
             sanitized_diff = sanitize["diff"]
             diff_hash = sanitize.get("diff_hash", _hash(request.diff))
+            logger.info("阶段完成 stage=sanitize run_id=%s redactions=%d sanitized_chars=%d",
+                        run_id, len(sanitize.get("redactions", [])), len(sanitized_diff))
 
             tools_payload = self.store.get_checkpoint(run_id, "tools")
+            logger.info("阶段开始 stage=tools run_id=%s checkpoint_hit=%s tools=%d",
+                        run_id, tools_payload is not None, len(self.tools.specs))
             if tools_payload is None:
                 current_stage = "tools"
                 tool_findings: list[Finding] = []
@@ -397,8 +499,12 @@ class ReviewPipeline:
                 tools_payload = {"findings": [finding.to_dict() for finding in tool_findings]}
                 self._save_checkpoint(run_id, "tools", tools_payload)
             tool_findings = [Finding.from_dict(item) for item in tools_payload.get("findings", [])]
+            logger.info("阶段完成 stage=tools run_id=%s findings=%d",
+                        run_id, len(tool_findings))
 
             current_stage = "review"
+            logger.info("阶段开始 stage=review run_id=%s mode=%s",
+                        run_id, config.review_mode)
             # v1 is intentionally MDR-only: the model is called only from the
             # rule batches above, never with an unconstrained generic prompt.
             mdr_findings, mdr_degradations = self._run_mdr_rules(run_id, request, sanitized_diff, diff_hash, config)
@@ -408,6 +514,8 @@ class ReviewPipeline:
                 self._save_checkpoint(run_id, "review", review_payload)
             llm_findings: list[Finding] = []
             degradations = list(dict.fromkeys(mdr_degradations + list(review_payload.get("degradations", []))))
+            logger.info("阶段完成 stage=review run_id=%s mdr_findings=%d degradations=%d",
+                        run_id, len(mdr_findings), len(degradations))
 
             findings = tool_findings + mdr_findings + llm_findings
             traces = self.store.get_traces(run_id)
@@ -439,12 +547,20 @@ class ReviewPipeline:
                                              sorted(degradations)))
             if render is None or render.get("input_hash") != render_input_hash:
                 current_stage = "render"
+                logger.info("阶段开始 stage=render run_id=%s checkpoint_hit=false",
+                            run_id)
                 from .report import render_markdown
                 result.markdown = render_markdown(result)
                 self._save_checkpoint(run_id, "render", {"markdown": result.markdown, "input_hash": render_input_hash})
             else:
+                logger.info("阶段开始 stage=render run_id=%s checkpoint_hit=true",
+                            run_id)
                 result.markdown = render.get("markdown", "")
+            logger.info("阶段完成 stage=render run_id=%s markdown_chars=%d",
+                        run_id, len(result.markdown))
             self._update_run(run_id, status="completed")
+            logger.info("评审完成 run_id=%s findings=%d traces=%d cost_usd=%.6f",
+                        run_id, len(findings), len(traces), result.cost_usd)
             return result
         except Exception as exc:
             if not failure_recorded:
@@ -455,3 +571,4 @@ class ReviewPipeline:
             heartbeat_thread.join(timeout=1)
             self.store.release_run_lease(run_id, lease_token)
             self._lease_token = None
+            logger.debug("运行锁释放 run_id=%s", run_id)

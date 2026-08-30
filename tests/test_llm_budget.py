@@ -46,6 +46,9 @@ def test_openai_compatible_client_parses_response(monkeypatch):
     assert captured["url"].endswith("/chat/completions")
     assert captured["body"]["model"] == "small"
     assert captured["body"]["messages"][0]["content"] == "safe prompt"
+    assert captured["body"]["enable_thinking"] is False
+    assert captured["body"]["stream"] is False
+    assert captured["body"]["response_format"] == {"type": "json_object"}
     assert captured["headers"]["Authorization"] == "Bearer key"
     assert captured["timeout"] == 7
 

@@ -9,8 +9,11 @@ MDR 是带 YAML front matter 的 Markdown 文件，只按数据解析；规则�
 ```text
 rules/
 ├── go/GO-STYLE-001.mdr
+├── python/PY-SEC-001.mdr
 └── python/PY-STYLE-001.mdr
 ```
+
+当前内置安全规则包括 `PY-SEC-001`：禁止将密码、令牌、密钥等敏感凭据传给 `print`、`logging` 或其他日志输出函数。
 
 ## 最小格式
 

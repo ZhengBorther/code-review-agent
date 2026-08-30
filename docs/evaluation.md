@@ -36,7 +36,7 @@ python3 -m review_agent --help
 python3 -m review_agent review \
   --diff-file tests/fixtures/go-many-parameters.diff \
   --config conf/review-agent.toml \
-  --rules-dir examples/rules \
+  --rules-dir rules \
   --output /tmp/mdr-review.md \
   --state-dir /tmp/mdr-review-state \
   --offline

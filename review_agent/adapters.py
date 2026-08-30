@@ -1,6 +1,7 @@
 """只读变更请求来源适配器。"""
 
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Protocol
@@ -8,6 +9,9 @@ from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 from .models import ChangeRequest
+
+
+logger = logging.getLogger(__name__)
 
 
 class ChangeRequestAdapter(Protocol):
@@ -26,7 +30,9 @@ class LocalDiffAdapter:
             raise ValueError("LocalDiffAdapter only accepts local:// URLs")
         if not self.diff_path.is_file():
             raise FileNotFoundError(self.diff_path)
-        return ChangeRequest(url=url, diff=self.diff_path.read_text(encoding="utf-8"), source="local")
+        diff = self.diff_path.read_text(encoding="utf-8")
+        logger.info("本地 diff 读取完成 chars=%d", len(diff))
+        return ChangeRequest(url=url, diff=diff, source="local")
 
 
 class GitHubAdapter:
@@ -44,15 +50,21 @@ class GitHubAdapter:
             headers["Authorization"] = f"Bearer {self.token}"
         # GitHub 元数据示例：{"title": "...", "user": {"login": "..."},
         # "diff_url": "https://github.com/.../pull/1.diff"。
-        request = Request(f"https://api.github.com/repos/{owner}/{repo}/pulls/{number}", headers=headers)
+        api_url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{number}"
+        logger.info("GitHub PR 元数据请求 owner=%s repo=%s number=%s", owner, repo, number)
+        request = Request(api_url, headers=headers)
         with urlopen(request, timeout=self.timeout) as response:
             metadata = json.loads(response.read())
-        diff_headers = {"User-Agent": "code-review-agent"}
+        logger.info("GitHub PR 元数据获取完成 number=%s", number)
+        # 不访问 metadata.diff_url（通常是 github.com 网页域名），直接用
+        # GitHub API 的媒体类型协商拿 unified diff，避免网页域名超时。
+        diff_headers = {"Accept": "application/vnd.github.diff", "User-Agent": "code-review-agent"}
         if self.token:
             diff_headers["Authorization"] = f"Bearer {self.token}"
-        diff_request = Request(metadata["diff_url"], headers=diff_headers)
+        diff_request = Request(api_url, headers=diff_headers)
         with urlopen(diff_request, timeout=self.timeout) as response:
             diff = response.read().decode("utf-8")
+        logger.info("GitHub PR diff 获取完成 number=%s chars=%d", number, len(diff))
         return ChangeRequest(url=url, title=metadata.get("title", ""), author=metadata.get("user", {}).get("login", ""), diff=diff, source="github")
 
 
@@ -72,7 +84,9 @@ class GitLabAdapter:
         encoded = quote(project, safe="")
         # GitLab 元数据和 changes 响应分别包含 title/author 与 changes[].diff；
         # 这里只提取评审所需字段，不克隆项目或执行其中的代码。
-        request = Request(f"{host}/api/v4/projects/{encoded}/merge_requests/{number}", headers=headers)
+        metadata_url = f"{host}/api/v4/projects/{encoded}/merge_requests/{number}"
+        logger.info("GitLab MR 元数据请求 host=%s project=%s number=%s", host, project, number)
+        request = Request(metadata_url, headers=headers)
         with urlopen(request, timeout=self.timeout) as response:
             metadata = json.loads(response.read())
         payload = metadata
@@ -81,4 +95,5 @@ class GitLabAdapter:
             with urlopen(changes_request, timeout=self.timeout) as response:
                 payload = json.loads(response.read())
         diff = "\n".join(change.get("diff", "") for change in payload.get("changes", []))
+        logger.info("GitLab MR diff 获取完成 number=%s chars=%d", number, len(diff))
         return ChangeRequest(url=url, title=metadata.get("title", ""), author=metadata.get("author", {}).get("username", ""), diff=diff, source="gitlab")

@@ -1,0 +1,16 @@
+---
+id: GO-SEC-101
+title: Go 代码不得打印或明文保存 password
+language: go
+domains: [SEC]
+severity: error
+prompt_hint: >
+  检查新增或修改的 Go 代码：password、passwd、secret 等敏感凭据不得通过 fmt.Printf 或 fmt.Println 写入日志，也不得直接保存到普通结构体字段。应使用安全哈希或专用凭据存储。
+deprecated: false
+---
+
+# GO-SEC-101 Go 代码不得打印或明文保存 password
+
+## 规则说明
+
+密码和其他凭据不能进入日志或普通业务对象的明文字段。

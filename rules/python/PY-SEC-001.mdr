@@ -1,0 +1,46 @@
+---
+id: PY-SEC-001
+title: 禁止打印或日志输出密码等敏感凭据
+language: python
+domains: [SECURITY]
+severity: error
+prompt_hint: >
+  检查新增或修改的 Python 代码：禁止将 password、passwd、pwd、secret、token、api_key、access_key、private_key
+  等密码或敏感凭据直接传给 print、logging、logger、日志格式化或其他标准输出/日志函数，也禁止通过 f-string、% 格式化、
+  字符串拼接或字典展开间接输出。应移除敏感字段，或使用经过审计的固定占位符/脱敏摘要；不要仅依赖日志系统的后处理脱敏。
+  只有明确证明值不包含凭据的常量、布尔状态或长度信息可以记录，并应避免输出完整凭据内容。
+deprecated: false
+---
+# PY-SEC-001 禁止打印或日志输出密码等敏感凭据
+
+## 规则说明
+
+- 不得把密码、令牌、密钥或其他认证凭据写入标准输出、应用日志、异常文本或调试日志。
+- 需要诊断时，只记录固定提示、是否存在的布尔值、长度或经过审计的脱敏摘要。
+- 规则同时覆盖直接传参、f-string、`%` 格式化、字符串拼接和字典/对象展开等间接输出方式。
+- 不要把“日志平台会自动脱敏”作为放行理由；凭据在离开进程前就不应进入日志消息。
+
+## 示例正例
+
+```python
+import logging
+
+logger = logging.getLogger(__name__)
+
+def authenticate(password: str) -> bool:
+    logger.info("authenticate request received")
+    return verify_password(password)
+```
+
+## 示例反例
+
+```python
+import logging
+
+logger = logging.getLogger(__name__)
+
+def authenticate(password: str) -> bool:
+    print("password:", password)
+    logger.debug("password=%s", password)
+    return verify_password(password)
+```

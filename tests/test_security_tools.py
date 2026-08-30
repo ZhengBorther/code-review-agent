@@ -116,6 +116,8 @@ def test_github_adapter_fetches_metadata_and_diff(monkeypatch):
     monkeypatch.setattr("review_agent.adapters.urlopen", fake_open)
     result = GitHubAdapter(token="secret").fetch("https://github.com/acme/repo/pull/7")
     assert result.title == "Fix bug" and "+pass" in result.diff and len(calls) == 2
+    assert calls[1].full_url == "https://api.github.com/repos/acme/repo/pulls/7"
+    assert calls[1].headers["Accept"] == "application/vnd.github.diff"
 
 
 def test_gitlab_adapter_fetches_merge_request_changes(monkeypatch):

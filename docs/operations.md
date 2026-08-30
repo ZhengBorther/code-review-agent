@@ -10,7 +10,7 @@ python3 -m review_agent review \
   --config conf/review-agent.toml
 ```
 
-公开仓库通常不需要平台 token；私有仓库需要在 `[github].token`/`[gitlab].token` 或环境变量中提供凭据。`--diff-file` 只用于本地离线、断网或固定 diff 复现。
+公开仓库通常不需要平台 token；私有仓库需要在 `conf/review-agent.toml` 的 `[github].token`/`[gitlab].token` 中提供凭据。`--diff-file` 只用于本地离线、断网或固定 diff 复现。
 
 ## 输出
 
@@ -25,6 +25,20 @@ state_dir = ".review-state"
 相对路径以配置文件所在目录为基准。CLI 的 `--output` 和 `--state-dir` 优先级更高。
 
 报告包含规则 ID、严重度、文件和行号、置信度分组、batch/finding trace、token、成本、耗时、错误和降级说明。
+
+## 日志
+
+CLI 默认将关键节点日志输出到 stderr，包括配置加载、适配器请求、fetch/sanitize/tools/review/render 阶段、MDR 语言批次、预算决策、模型用量和报告写入。日志只记录数量、哈希、模型、成本和耗时，不打印 token、diff、prompt 或模型回复正文。
+
+需要更详细排障信息时使用：
+
+```bash
+python3 -m review_agent review \
+  https://github.com/org/repo/pull/123 \
+  --log-level DEBUG
+```
+
+可选级别为 `DEBUG`、`INFO`、`WARNING`、`ERROR`，默认是 `INFO`。
 
 ## Budget
 

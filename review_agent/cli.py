@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import logging
 import os
 import sys
 from dataclasses import replace
@@ -22,6 +23,7 @@ from .storage import StateStore
 from .tools import ToolRegistry
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[1] / "conf" / "review-agent.toml"
+logger = logging.getLogger(__name__)
 
 
 def _gitlab_host_allowed(host: str, cli_hosts: list[str], persisted: dict | None) -> bool:
@@ -83,7 +85,7 @@ def _parser() -> argparse.ArgumentParser:
     review.add_argument("--model", default=None, help="primary model name")
     review.add_argument("--fallback-model", default=None, help="fallback model name")
     review.add_argument("--oneapi-base-url", default=None, help="OpenAI-compatible API base URL")
-    review.add_argument("--oneapi-api-key", default=None, help="OneAPI API key (prefer ONEAPI_API_KEY)")
+    review.add_argument("--oneapi-api-key", default=None, help="OneAPI API key (TOML [llm].api_key, or ONEAPI_API_KEY)")
     review.add_argument("--github-token", default=None, help="GitHub token (prefer GITHUB_TOKEN)")
     review.add_argument("--gitlab-token", default=None, help="GitLab token (prefer GITLAB_TOKEN)")
     review.add_argument("--offline", action="store_true", default=None, help="use deterministic local model; never access network")
@@ -91,6 +93,7 @@ def _parser() -> argparse.ArgumentParser:
     review.add_argument("--gitlab-host", action="append", default=[], help="explicitly authorize a self-hosted GitLab hostname; repeatable")
     review.add_argument("--profile", type=Path, help="TOML repository profile")
     review.add_argument("--repo-path", type=Path, help="repository path used to select a profile")
+    review.add_argument("--log-level", choices=("DEBUG", "INFO", "WARNING", "ERROR"), default="INFO", help="日志级别，默认 INFO")
     return parser
 
 
@@ -127,6 +130,9 @@ def _run_review(args: argparse.Namespace) -> int:
             "gitlab_allowed_hosts": tuple(args.gitlab_host) if args.gitlab_host else None,
         },
     )
+    logger.info("配置加载 config=%s model=%s offline=%s rules_dirs=%d",
+                config_path or "<defaults>", app_config.model, app_config.offline,
+                len(app_config.rules.directories) + len(profile_rules_dirs))
     output = Path(app_config.output_path)
     state_dir = Path(app_config.state_dir)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -164,11 +170,19 @@ def _run_review(args: argparse.Namespace) -> int:
         else:
             raise ValueError("unsupported change-request URL; expected GitHub or GitLab PR/MR")
 
+    logger.info("输入准备 target_type=%s adapter=%s resume=%s",
+                "diff_file" if args.diff_file is not None else "url",
+                type(adapter).__name__, bool(args.run_id))
+
     if app_config.offline:
         client = DeterministicClient()
     else:
         if not app_config.llm_base_url or not app_config.llm_api_key:
-            raise ValueError("OneAPI requires --oneapi-base-url and --oneapi-api-key (or ONEAPI_BASE_URL/ONEAPI_API_KEY)")
+            raise ValueError(
+                "OneAPI requires a base URL and API key; configure [llm].base_url/[llm].api_key "
+                "in conf/review-agent.toml, or use --oneapi-base-url/--oneapi-api-key "
+                "(ONEAPI_BASE_URL/ONEAPI_API_KEY)"
+            )
         client = OpenAICompatibleClient(
             app_config.llm_base_url,
             app_config.llm_api_key,
@@ -222,8 +236,12 @@ def _run_review(args: argparse.Namespace) -> int:
     if not run_target:
         run_target = url
     pipeline = ReviewPipeline(store, adapter, ToolRegistry.with_builtins(), client, config, rules=rules)
+    logger.info("开始执行 run_target=%s output=%s state_dir=%s",
+                args.run_id or url, output, state_dir)
     result = build_review_graph(pipeline).run(run_target)
     output.write_text(result.markdown, encoding="utf-8")
+    logger.info("报告写入 run_id=%s output=%s findings=%d",
+                result.run_id, output, len(result.findings))
     return 0
 
 
@@ -234,6 +252,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.command is None:
             parser.print_help()
             return 0
+        logging.basicConfig(
+            level=getattr(logging, args.log_level),
+            format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        )
+        logging.getLogger().setLevel(getattr(logging, args.log_level))
         return _run_review(args)
     except SystemExit as exc:
         return int(exc.code or 0)

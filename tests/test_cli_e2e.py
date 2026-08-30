@@ -18,7 +18,13 @@ def test_cli_generates_report_without_network(tmp_path):
 
 def test_cli_help_exits_zero(capsys):
     assert main(["--help"]) == 0
-    assert "review" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "review" in output
+
+
+def test_review_help_exposes_log_level(capsys):
+    assert main(["review", "--help"]) == 0
+    assert "--log-level" in capsys.readouterr().out
 
 
 def test_cli_reuses_existing_run_for_same_url(tmp_path):
