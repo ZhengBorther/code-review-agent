@@ -36,14 +36,14 @@ enabled_languages = ["go", "python"]
 disabled_rules = []
 ```
 
-完整样例：[review-agent.example.toml](../review-agent.example.toml)。
+默认配置：[conf/review-agent.toml](../conf/review-agent.toml)。不传 `--config` 时自动读取该文件。
 
 正式运行传入 PR/MR URL：
 
 ```bash
 python3 -m review_agent review \
   https://github.com/org/repo/pull/123 \
-  --config review-agent.toml
+  --config conf/review-agent.toml
 ```
 
 支持的 URL 格式：
@@ -66,7 +66,7 @@ CLI 覆盖示例：
 ```bash
 python3 -m review_agent review \
   --diff-file change.diff \
-  --config review-agent.toml \
+  --config conf/review-agent.toml \
   --model gpt-5.6-sol \
   --budget-usd 2.0
 ```

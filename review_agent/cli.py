@@ -21,6 +21,8 @@ from .rules import MdrRuleLoader, RuleRegistry, RuleLoadError
 from .storage import StateStore
 from .tools import ToolRegistry
 
+DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[1] / "conf" / "review-agent.toml"
+
 
 def _gitlab_host_allowed(host: str, cli_hosts: list[str], persisted: dict | None) -> bool:
     """只允许公共 GitLab 或显式声明的私有 host，禁止模糊匹配。"""
@@ -106,8 +108,9 @@ def _run_review(args: argparse.Namespace) -> int:
         if profile is None:
             raise ValueError(f"no profile matches --repo-path {args.repo_path}")
         profile_rules_dirs.extend(profile.rules_dirs)
+    config_path = args.config or (DEFAULT_CONFIG_PATH if DEFAULT_CONFIG_PATH.is_file() else None)
     app_config = load_app_config(
-        args.config,
+        config_path,
         profile_rules_dirs,
         overrides={
             "budget_usd": args.budget_usd,
@@ -181,7 +184,7 @@ def _run_review(args: argparse.Namespace) -> int:
         )
         rules = RuleRegistry.from_snapshot(snapshot_config, persisted_config.get("rules_snapshot", []))
     else:
-        rules = _load_rule_registry(args.config, profile_rules_dirs)
+        rules = _load_rule_registry(config_path, profile_rules_dirs)
     if profile and profile.enabled_languages:
         # Profile language allowlist overrides the generic rules section for
         # this repository while preserving the loaded MDR snapshot.

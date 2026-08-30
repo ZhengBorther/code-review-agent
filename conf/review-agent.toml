@@ -1,0 +1,27 @@
+# 默认配置：运行 `python3 -m review_agent review <PR/MR_URL>` 时自动读取。
+# 不要把真实 token 提交到仓库；请使用环境变量或本地 chmod 600 的覆盖文件。
+
+[review]
+mode = "mdr_only"
+budget_usd = 10.0
+max_diff_chars = 12000
+completion_tokens = 512
+max_concurrency = 2
+output = "../review.md"
+state_dir = "../.review-state"
+
+[llm]
+base_url = "https://oneapi.example/v1"
+model = "qwen-plus"
+fallback_model = "qwen-turbo"
+timeout_seconds = 120
+
+[llm.pricing]
+# 单位：USD / 1,000 tokens，prompt 和 completion 合计。
+qwen-plus = 0.003
+qwen-turbo = 0.001
+
+[rules]
+directories = ["../examples/rules"]
+enabled_languages = []
+disabled_rules = []

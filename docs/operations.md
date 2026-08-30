@@ -7,7 +7,7 @@
 ```bash
 python3 -m review_agent review \
   https://github.com/org/repo/pull/123 \
-  --config review-agent.toml
+  --config conf/review-agent.toml
 ```
 
 公开仓库通常不需要平台 token；私有仓库需要在 `[github].token`/`[gitlab].token` 或环境变量中提供凭据。`--diff-file` 只用于本地离线、断网或固定 diff 复现。
@@ -50,7 +50,7 @@ render
 恢复：
 
 ```bash
-python3 -m review_agent review --run-id <run-id> --config review-agent.toml
+python3 -m review_agent review --run-id <run-id> --config conf/review-agent.toml
 ```
 
 成功阶段跳过，失败阶段重试。provider 结果和成本在 SQLite 事务中保存；进程中断后不会盲目重复可能已计费的请求。

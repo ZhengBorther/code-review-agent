@@ -17,7 +17,7 @@
 python3 -m pip install -e .
 python3 -m review_agent review \
   https://github.com/org/repo/pull/123 \
-  --config review-agent.toml
+  --config conf/review-agent.toml
 ```
 
 PR/MR 链接是正式输入方式。`--diff-file` 只用于本地离线、断网或固定 diff 复现：
@@ -25,7 +25,7 @@ PR/MR 链接是正式输入方式。`--diff-file` 只用于本地离线、断网
 ```bash
 python3 -m review_agent review \
   --diff-file tests/fixtures/go-many-parameters.diff \
-  --config review-agent.example.toml \
+  --config conf/review-agent.toml \
   --rules-dir examples/rules \
   --offline
 ```

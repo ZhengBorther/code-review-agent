@@ -25,7 +25,7 @@ python3 -m pytest -q tests/test_eval_cases.py
 ```bash
 python3 -m review_agent review \
   https://github.com/org/repo/pull/123 \
-  --config review-agent.toml
+  --config conf/review-agent.toml
 ```
 
 ## 完整验证
@@ -35,7 +35,7 @@ python3 -m pytest -q
 python3 -m review_agent --help
 python3 -m review_agent review \
   --diff-file tests/fixtures/go-many-parameters.diff \
-  --config review-agent.example.toml \
+  --config conf/review-agent.toml \
   --rules-dir examples/rules \
   --output /tmp/mdr-review.md \
   --state-dir /tmp/mdr-review-state \
