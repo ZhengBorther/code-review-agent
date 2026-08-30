@@ -4,6 +4,7 @@
 
 ```text
 CLI
+  -> 输入 PR/MR URL（正式）或本地 diff（离线备用）
   -> LangGraph: prepare -> review_mdr_pipeline -> deliver
   -> ReviewPipeline
        fetch -> sanitize -> tools -> MDR batches -> render

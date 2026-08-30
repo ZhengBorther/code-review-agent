@@ -1,5 +1,17 @@
 # 运行与安全
 
+## 输入方式
+
+正式输入是 GitHub Pull Request 或 GitLab Merge Request 链接：
+
+```bash
+python3 -m review_agent review \
+  https://github.com/org/repo/pull/123 \
+  --config review-agent.toml
+```
+
+公开仓库通常不需要平台 token；私有仓库需要在 `[github].token`/`[gitlab].token` 或环境变量中提供凭据。`--diff-file` 只用于本地离线、断网或固定 diff 复现。
+
 ## 输出
 
 配置：

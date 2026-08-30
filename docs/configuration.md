@@ -38,6 +38,23 @@ disabled_rules = []
 
 完整样例：[review-agent.example.toml](../review-agent.example.toml)。
 
+正式运行传入 PR/MR URL：
+
+```bash
+python3 -m review_agent review \
+  https://github.com/org/repo/pull/123 \
+  --config review-agent.toml
+```
+
+支持的 URL 格式：
+
+```text
+https://github.com/{owner}/{repo}/pull/{number}
+https://gitlab.com/{group}/{project}/-/merge_requests/{number}
+```
+
+`--diff-file` 仅用于本地离线或断网测试，不是正式输入要求。
+
 配置优先级：
 
 ```text
