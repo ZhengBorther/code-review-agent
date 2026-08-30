@@ -1,112 +1,249 @@
 # Code Review Agent
 
-一个可恢复、可审计的 Code Review CLI。支持显式 unified diff，也支持只读获取 GitHub Pull Request / GitLab Merge Request diff，最终生成本地 Markdown 报告。
+一个以 MDR（Markdown Review Rule）为唯一依据的 Code Review Agent。输入 GitHub Pull Request、GitLab Merge Request 或本地 unified diff，输出带规则、证据和 trace 的 Markdown 报告。
 
-## 离线运行
+## 1. 架构
 
-离线模式不会发起网络请求，使用确定性模型，适合 CI 和本地验证：
-
-```bash
-python3 -m review_agent review \
-  --diff-file tests/fixtures/sample.diff \
-  --output report.md \
-  --state-dir .review-state \
-  --offline
+```text
+CLI
+  -> LangGraph 编排图
+       prepare
+       review_mdr_pipeline
+       deliver
+  -> SQLite-aware ReviewPipeline
+       fetch -> sanitize -> tools -> MDR batches -> render
+  -> Markdown 报告
 ```
 
-状态目录中的 `state.db` 保存 run、阶段 checkpoint 和 trace。重复执行同一 URL/run ID 会复用成功阶段，不会从头调用模型。
+核心组件：
 
-## OneAPI
+| 组件 | 作用 |
+| --- | --- |
+| `adapters.py` | 读取本地 diff、GitHub PR、GitLab MR |
+| `rules.py` | 安全加载 MDR、去重、停用、规则集哈希 |
+| `diff_languages.py` | 从 unified diff 识别并分组语言 |
+| `rule_review.py` | 构造同语言 MDR 批次、校验模型 JSON |
+| `pipeline.py` | checkpoint、预算、reservation、并发和恢复 |
+| `storage.py` | SQLite runs/checkpoints/traces/reservations/leases |
+| `graph_pipeline.py` | LangGraph 固定编排入口 |
+| `report.py` | 脱敏 Markdown 渲染 |
 
-OneAPI 使用 OpenAI Chat Completions 兼容协议。模型、fallback、超时、费率和 API key 都可写在统一 TOML 配置中；生产环境更推荐通过环境变量注入：
+LangGraph 是正式依赖，SQLite 是恢复、预算和审计的事实来源。项目不引入 ShellTool，也不执行被评审仓库中的代码、测试、构建或命令。
+
+## 2. 安装
+
+要求 Python 3.11+：
 
 ```bash
-# Credentials may come from this config file or environment variables.
-export ONEAPI_API_KEY=your-key
-python3 -m review_agent review \
-  --diff-file change.diff \
-  --config review-agent.example.toml
+python3 -m pip install -e .
 ```
 
-配置文件可同时管理 `[review]`、`[llm]`、`[llm.pricing]` 和 `[rules]`。命令行参数覆盖 TOML，环境变量覆盖 TOML；预算不足时会依次尝试降级模型、截断上下文，最后只保留规则工具结果。
+依赖包括 `PyYAML`、`pydantic` 和 `langgraph`。安装后检查：
 
-`[review].mode` 当前只支持 `mdr_only`，所有模型请求都必须属于已加载的 MDR 规则批次。没有命中规则时不会生成自由形式评论，也不会调用通用 review。
+```bash
+python3 -m review_agent --help
+```
 
-`[llm.pricing]` 的单位是 **USD / 1,000 tokens**。例如 `qwen-plus = 0.003` 表示每 1,000 tokens 估算成本为 `$0.003`。当前版本使用 prompt tokens 和 completion tokens 的合计数量乘以该单一费率；如果模型供应商区分输入和输出价格，需要先换算成一个 blended rate。
+## 3. 配置
 
-配置优先级为：代码默认值 < TOML 文件 < 环境变量 < CLI 参数。OneAPI、GitHub、GitLab token 都支持放入 TOML，但不写入 SQLite 运行快照、checkpoint 或 trace。包含 token 的配置文件必须限制为当前用户可读：
+复制 [review-agent.example.toml](review-agent.example.toml) 为本地配置：
+
+```toml
+[review]
+mode = "mdr_only"
+budget_usd = 10.0
+max_diff_chars = 12000
+completion_tokens = 512
+max_concurrency = 2
+output = "review.md"
+state_dir = ".review-state"
+
+[llm]
+base_url = "https://oneapi.example/v1"
+model = "qwen-plus"
+fallback_model = "qwen-turbo"
+timeout_seconds = 120
+# api_key = "your-oneapi-token"
+
+[llm.pricing]
+# 单位：USD / 1,000 tokens；prompt 和 completion 使用合计 blended rate。
+qwen-plus = 0.003
+qwen-turbo = 0.001
+
+[github]
+# token = "your-github-token"
+
+[gitlab]
+# token = "your-gitlab-token"
+
+[rules]
+directories = ["./examples/rules"]
+enabled_languages = ["go", "python"]
+disabled_rules = []
+```
+
+配置优先级：
+
+```text
+代码默认值 < TOML < 环境变量 < CLI 参数
+```
+
+token 可以放在本地 TOML，也可以使用 `ONEAPI_API_KEY`、`GITHUB_TOKEN`、`GITLAB_TOKEN`。token 不写入 SQLite 运行快照、checkpoint 或 trace；配置文件应设置：
 
 ```bash
 chmod 600 review-agent.toml
 ```
 
-也可以继续使用 `ONEAPI_API_KEY`、`GITHUB_TOKEN` 和 `GITLAB_TOKEN` 环境变量；环境变量优先于 TOML，CLI 的 `--oneapi-api-key`、`--github-token` 和 `--gitlab-token` 优先级最高。
+`budget_usd` 是单个 PR/MR run 的预算，不是所有任务共享的全局预算。`[llm.pricing]` 的单位是 USD / 1,000 tokens，prompt 和 completion token 合计计费。
 
-## GitHub / GitLab
+## 4. 使用
 
-直接传入 PR/MR URL 即可读取变更元数据和 diff；私有项目分别使用 `GITHUB_TOKEN`、`GITLAB_TOKEN`。适配器只发起只读 HTTP 请求，不克隆仓库，也不执行仓库代码。首版仍只生成本地报告，不会向远端发布评论。
+### 本地 diff
 
-## 安全边界
-
-- 发送给 LLM 前会对常见 API key、token、密码和私钥进行确定性脱敏；原始 diff 只写入本地状态目录。
-- CLI 不执行仓库中的脚本或任意命令；`--diff-file` 必须由调用方显式指定。
-- 报告按“高置信度：可直接采纳”和“建议：仅供参考”分级，并为每条 finding 附 trace ID。trace 记录工具、输入哈希、脱敏 prompt、模型回复和成本。
-
-## MDR 规则
-
-MDR（Markdown Review Rule）是只包含 YAML front matter 和说明文本的规则文件。它不是 Python 插件，规则中的代码示例只会作为评审上下文，永远不会被执行。
-
-规则目录示例：
-
-```text
-examples/rules/
-└── go/GO-STYLE-001.mdr
+```bash
+python3 -m review_agent review \
+  --diff-file change.diff \
+  --config review-agent.toml
 ```
 
-一个最小规则需要这些 front matter 字段：`id`、`title`、`language`、`domains`、`severity`、`prompt_hint` 和 `deprecated`。`severity` 可取 `error`、`warning` 或 `info`；LLM 产生的 MDR finding 始终是“仅供参考”，只有规则工具或测试证据支持的 finding 才能是高置信度。
+### GitHub PR / GitLab MR
 
-可以复制示例配置后显式授权规则目录：
+```bash
+python3 -m review_agent review \
+  https://github.com/org/repo/pull/123 \
+  --config review-agent.toml
+```
+
+适配器只读取元数据和 diff，不克隆仓库、不执行仓库代码。首版只生成本地 Markdown，不会向远端发布评论。
+
+### 离线运行
 
 ```bash
 python3 -m review_agent review \
   --diff-file tests/fixtures/go-many-parameters.diff \
   --config review-agent.example.toml \
   --rules-dir examples/rules \
-  --output /tmp/mdr-review.md \
-  --state-dir /tmp/mdr-review-state \
   --offline
 ```
 
-配置文件中的 `[rules].directories` 相对路径以配置文件所在目录为基准；重复的 CLI `--rules-dir` 会追加并去重。用户默认目录为 `~/.config/code-review-agent/rules.d`。CLI 目录优先追加到配置目录，规则按 ID 排序，重复 ID 会使运行失败。`enabled_languages` 限制语言，`disabled_rules` 禁用指定 ID，`deprecated: true` 的规则会跳过。
+离线模式使用确定性模型，不访问 OneAPI 或 GitHub。
 
-变更按文件扩展名分组：Go、Python、TypeScript、Java 等各自产生语言批次；`common` 规则会加入每个批次。同一语言的规则默认合并为一次模型请求，超出上下文限制时才拆分。每个批次有 `mdr_batch` trace，每条 finding 另有带父 trace 的 `mdr_finding` trace。
+### 恢复任务
 
-规则集哈希和 diff 哈希会写入 checkpoint。修改规则或相关语言的 diff 后，只会重新执行受影响的语言批次；断网或重启可以继续使用已有 checkpoint。非法 YAML、缺少字段、非法 ID/severity 或重复 ID 会报告具体文件并终止本次运行。
+```bash
+python3 -m review_agent review \
+  --run-id <run-id> \
+  --config review-agent.toml
+```
 
-运行测试：`pytest -q`。
+本地 diff 的同一路径和内容哈希会自动复用已有 run；远程 PR 建议保存 `run_id` 并显式恢复。
 
-## 编排与离线评测
+## 5. MDR 规则
 
-LangGraph 是正式运行依赖。CLI 统一使用 `prepare -> review_mdr_pipeline -> deliver` 三节点生产图；详细的 `fetch`、`sanitize`、`tools`、MDR 批次和 `render` checkpoint 仍由中间节点中的 SQLite-aware Pipeline 管理。缺少 LangGraph 时启动失败，不再维护第二套 fallback 路径。SQLite 仍是 checkpoint、预算 reservation 和 trace 的事实来源。
+MDR 是带 YAML front matter 的 Markdown 文件，只按数据解析；规则中的 Go、Python、shell 示例不会执行。
 
-不同语言的 MDR 批次按 `[review].max_concurrency` 受限并发执行；同步 HTTP 调用放入工作线程，避免阻塞事件循环。每个批次在调用模型前仍必须通过 SQLite 原子预算 reservation，因此并发不会突破单个 PR/MR 的 `budget_usd`。
+目录示例：
 
-离线规则评测示例位于 `eval/cases/`，只使用 fixture diff 和注入的模型响应，不访问网络，也不执行规则或仓库代码。
+```text
+rules/
+├── go/
+│   └── GO-STYLE-001.mdr
+└── python/
+    └── PY-STYLE-001.mdr
+```
 
-## 仓库 Profile
+最小规则示例：
 
-可使用单独的 TOML profile 按仓库选择规则目录、语言和跳过文件：
+```md
+---
+id: GO-STYLE-001
+title: 函数业务参数超过4个时必须使用结构体
+language: go
+domains: [STYLE]
+severity: warning
+prompt_hint: >
+  除 context.Context 外，业务参数超过4个时必须使用 Params、Options 或 Request 结构体封装。
+deprecated: false
+---
+
+# GO-STYLE-001 函数业务参数超过4个时必须使用结构体
+
+规则说明、正例和反例写在这里。
+```
+
+必填字段：`id`、`title`、`language`、`domains`、`severity`、`prompt_hint`、`deprecated`。
+
+规则校验：
+
+- `id` 必须唯一并使用大写规则 ID 格式；重复 ID 会报告来源文件。
+- `severity` 只能是 `error`、`warning`、`info`。
+- `deprecated: true` 的规则不参与评审。
+- `common` 规则适用于所有语言；未知扩展名进入 `unknown` 分组。
+- 新增规则只需把 `.mdr` 放入显式授权目录，不需要修改 Pipeline。
+
+模型必须返回 JSON。每条有效 finding 必须包含已加载的 `rule_id` 和 diff 中存在的 `file_path`；文件级问题可将 `line_start`、`line_end` 设为 `null`。MDR finding 的 `confidence` 始终是 `advisory`，severity 由 MDR 提供。
+
+## 6. 批处理、预算和并发
+
+同一语言的规则合并为一次模型请求：
+
+```text
+Go diff + Go MDR + Common MDR -> 一个 Go batch
+Python diff + Python MDR + Common MDR -> 一个 Python batch
+```
+
+不同语言 batch 按 `[review].max_concurrency` 受限并发执行；SQLite `BEGIN IMMEDIATE` 保证单个 PR/MR 的 reservation 不超预算。预算不足时依次尝试主模型、fallback、截断上下文，最后禁用该 batch；不会以超预算结果生成成功 finding。
+
+## 7. Checkpoint 和 Trace
+
+SQLite 保存：
+
+```text
+runs
+checkpoints
+traces
+reservations
+run_leases
+```
+
+主要 checkpoint：
+
+```text
+fetch
+sanitize
+tools
+rules:<language>:<batch>
+review
+render
+```
+
+每条 MDR finding 有一个 `mdr_finding` trace，并通过 `parent_trace_id` 关联 `mdr_batch` trace。batch trace 保存规则 ID、规则集哈希、diff 哈希、脱敏 prompt、模型回复、token、成本、耗时和拒绝原因。
+
+恢复时成功阶段跳过；失败阶段重试；已结算但后续落盘失败的模型结果从 SQLite 重建，避免重复请求。run lease 和 owner fencing 防止两个进程同时修改同一个 run。
+
+## 8. 安全边界
+
+- MDR、profile 和 diff 只作为数据解析，不执行其中的代码或命令。
+- 常见 API key、私钥、AWS key、GitHub/GitLab/Slack token、Bearer token、password 等会被替换为 `[REDACTED:...]`。
+- 原始 diff 只保存在本地状态目录；进入模型和 trace 的内容已脱敏。
+- GitHub/GitLab 适配器只发起只读 HTTP 请求。
+- 不加载被评审仓库中未显式授权的规则目录。
+- 项目不提供 ShellTool，不在用户仓库运行任意命令。
+
+## 9. Profile 和离线评测
+
+Profile 可以按仓库路径选择规则和跳过文件：
 
 ```toml
 [[profiles]]
-name = "cr-agent-code"
+name = "my-repo"
 repo = "/path/to/repository"
-rules_dirs = ["./examples/rules"]
+rules_dirs = ["./company-rules"]
 enabled_languages = ["go"]
 skip_globs = ["vendor/**", "*.generated.go"]
 ```
 
-运行时显式指定 profile 和仓库路径：
+运行：
 
 ```bash
 python3 -m review_agent review \
@@ -115,4 +252,17 @@ python3 -m review_agent review \
   --repo-path /path/to/repository
 ```
 
-Profile 只影响 MDR 规则范围和文件过滤，不包含命令，也不会执行仓库代码。
+离线评测 case 位于 `eval/cases/`，执行：
+
+```bash
+python3 -m pytest -q tests/test_eval_cases.py
+```
+
+## 10. 开发验证
+
+```bash
+python3 -m pytest -q
+git diff --check
+```
+
+当前测试覆盖 MDR schema、语言分组、批量调用、并发预算、checkpoint 恢复、trace 关联、配置优先级、profile 和 CLI 端到端流程。
