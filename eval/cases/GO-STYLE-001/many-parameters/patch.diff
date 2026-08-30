@@ -1,9 +1,0 @@
-diff --git a/main/user.go b/main/user.go
---- a/main/user.go
-+++ b/main/user.go
-@@ -1,3 +1,7 @@
-+package main
-+
-+func newUser(id string, name string, age int, address string, phone string, email string, password string) *User {
-+    return nil
-+}
